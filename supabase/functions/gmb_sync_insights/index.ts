@@ -72,9 +72,13 @@ serve(async (req) => {
   }
 
   let step = "init"
+  const startedAt = Date.now()
+  const maxRunMs = 45_000 // keep well under platform timeouts
+
   try {
     step = "parse_request"
-    const { organization_id, days = 30 } = await req.json()
+    const reqBody = await req.json()
+    const { organization_id, days = 30 } = reqBody || {}
     if (!organization_id) {
       return new Response(
         JSON.stringify({ error: "Missing organization_id", step }),
@@ -138,7 +142,6 @@ serve(async (req) => {
       .from("gmb_locations")
       .select("id, organization_id, location_id, location_name, gmb_account:gmb_accounts(id, account_id, access_token, refresh_token, token_expires_at, is_active)")
       .eq("organization_id", organization_id)
-      .eq("gmb_account.is_active", true)
 
     if (locErr) {
       return new Response(
@@ -147,13 +150,13 @@ serve(async (req) => {
       )
     }
 
-    const safeDays = Math.max(1, Math.min(Number(days) || 30, 90))
+    const safeDays = Math.max(1, Math.min(Number(days) || 60, 180))
     const end = new Date()
     const start = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000)
     const endYmd = end.toISOString().slice(0, 10)
     const startYmd = start.toISOString().slice(0, 10)
 
-    const metrics = [
+    const baseMetrics = [
       // Updated metric names (GBP Performance API)
       "WEBSITE_CLICKS",
       "CALL_CLICKS",
@@ -163,46 +166,82 @@ serve(async (req) => {
       "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH",
       "BUSINESS_IMPRESSIONS_MOBILE_SEARCH",
     ]
+    const extraMetrics = [
+      "BUSINESS_CONVERSATIONS",
+      "BUSINESS_MESSAGES",
+      "BUSINESS_BOOKINGS",
+      "BUSINESS_FOOD_ORDERS",
+    ]
+    const metrics = Array.isArray(reqBody?.metrics) && reqBody?.metrics?.length
+      ? reqBody.metrics
+      : baseMetrics.concat(extraMetrics)
 
     let totalPointsUpserted = 0
     const perLocation: any[] = []
 
     for (const loc of locations || []) {
+      if (Date.now() - startedAt > maxRunMs) {
+        perLocation.push({
+          location_id: loc?.id,
+          location_name: loc?.location_name,
+          warning: "Time limit reached; partial sync",
+        })
+        break
+      }
+
       const account = (loc as any).gmb_account
       if (!account) continue
+      if (account?.is_active === false) continue
 
       try {
         step = "refresh_token"
         const accessToken = await refreshAccessTokenIfNeeded(supabaseAdminClient, account)
 
         step = "fetch_performance"
-        const url = new URL(
-          `https://businessprofileperformance.googleapis.com/v1/locations/${loc.location_id}:fetchMultiDailyMetricsTimeSeries`,
-        )
-        for (const m of metrics) url.searchParams.append("dailyMetrics", m)
-        url.searchParams.set("dailyRange.start_date.year", String(ymdToParts(startYmd).year))
-        url.searchParams.set("dailyRange.start_date.month", String(ymdToParts(startYmd).month))
-        url.searchParams.set("dailyRange.start_date.day", String(ymdToParts(startYmd).day))
-        url.searchParams.set("dailyRange.end_date.year", String(ymdToParts(endYmd).year))
-        url.searchParams.set("dailyRange.end_date.month", String(ymdToParts(endYmd).month))
-        url.searchParams.set("dailyRange.end_date.day", String(ymdToParts(endYmd).day))
+        const makeUrl = (metricList: string[]) => {
+          const url = new URL(
+            `https://businessprofileperformance.googleapis.com/v1/locations/${loc.location_id}:fetchMultiDailyMetricsTimeSeries`,
+          )
+          for (const m of metricList) url.searchParams.append("dailyMetrics", m)
+          url.searchParams.set("dailyRange.start_date.year", String(ymdToParts(startYmd).year))
+          url.searchParams.set("dailyRange.start_date.month", String(ymdToParts(startYmd).month))
+          url.searchParams.set("dailyRange.start_date.day", String(ymdToParts(startYmd).day))
+          url.searchParams.set("dailyRange.end_date.year", String(ymdToParts(endYmd).year))
+          url.searchParams.set("dailyRange.end_date.month", String(ymdToParts(endYmd).month))
+          url.searchParams.set("dailyRange.end_date.day", String(ymdToParts(endYmd).day))
+          return url
+        }
 
-        const resp = await fetch(url.toString(), {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        })
+        const tryFetch = async (metricList: string[]) => {
+          const url = makeUrl(metricList)
+          const resp = await fetch(url.toString(), {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+          const text = await resp.text()
+          return { resp, text, url: url.toString(), metricList }
+        }
 
-        if (!resp.ok) {
-          const t = await resp.text()
+        let respPayload = await tryFetch(metrics)
+        if (!respPayload.resp.ok && metrics !== baseMetrics) {
+          respPayload = await tryFetch(baseMetrics)
+        }
+
+        if (!respPayload.resp.ok) {
           perLocation.push({
             location_id: loc.id,
             location_name: loc.location_name,
-            error: t,
-            status: resp.status,
+            error: respPayload.text,
+            status: respPayload.resp.status,
           })
           continue
         }
 
-        const data = await resp.json()
+        let data: any = null
+        try {
+          data = respPayload.text ? JSON.parse(respPayload.text) : null
+        } catch {
+          data = null
+        }
 
         // Store raw response for audit/debug (best-effort; do not fail sync if insert fails)
         try {
@@ -211,8 +250,8 @@ serve(async (req) => {
             gmb_location_id: loc.id,
             kind: "multi_daily_metrics",
             request: {
-              url: url.toString(),
-              metrics,
+              url: respPayload.url,
+              metrics: respPayload.metricList,
               start: startYmd,
               end: endYmd,
               days: safeDays,
@@ -226,6 +265,14 @@ serve(async (req) => {
         const multi = data?.multiDailyMetricTimeSeries ?? []
 
         let upserts = 0
+        const rowsToUpsert: Array<{
+          gmb_location_id: string
+          organization_id: string
+          metric_type: string
+          metric_value: number
+          date: string
+        }> = []
+
         for (const m of multi) {
           const dailySeries = m?.dailyMetricTimeSeries ?? []
           if (!Array.isArray(dailySeries)) continue
@@ -254,25 +301,38 @@ serve(async (req) => {
               const metric_value = Number(rawValue)
               if (!Number.isFinite(metric_value)) continue
 
-              const { error: upErr } = await supabaseAdminClient
-                .from("gmb_insights")
-                .upsert(
-                  {
-                    gmb_location_id: loc.id,
-                    organization_id,
-                    metric_type: metricType,
-                    metric_value,
-                    date,
-                  },
-                  { onConflict: "gmb_location_id,metric_type,date" },
-                )
-
-              if (!upErr) {
-                upserts++
-                totalPointsUpserted++
-              }
+              rowsToUpsert.push({
+                gmb_location_id: loc.id,
+                organization_id,
+                metric_type: metricType,
+                metric_value,
+                date,
+              })
             }
           }
+        }
+
+        // Batch upsert to avoid thousands of network calls (prevents timeouts)
+        step = "upsert_points_batch"
+        const chunkSize = 500
+        for (let i = 0; i < rowsToUpsert.length; i += chunkSize) {
+          if (Date.now() - startedAt > maxRunMs) break
+          const chunk = rowsToUpsert.slice(i, i + chunkSize)
+          const { error: upErr } = await supabaseAdminClient
+            .from("gmb_insights")
+            .upsert(chunk, { onConflict: "gmb_location_id,metric_type,date" })
+          if (upErr) {
+            perLocation.push({
+              location_id: loc.id,
+              location_name: loc.location_name,
+              error: upErr.message,
+              step,
+            })
+            // stop this location, continue others
+            break
+          }
+          upserts += chunk.length
+          totalPointsUpserted += chunk.length
         }
 
         perLocation.push({
@@ -295,6 +355,7 @@ serve(async (req) => {
         days: safeDays,
         total_points_upserted: totalPointsUpserted,
         locations: perLocation,
+        partial: Date.now() - startedAt > maxRunMs,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     )

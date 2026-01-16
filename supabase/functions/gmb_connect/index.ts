@@ -236,6 +236,7 @@ serve(async (req) => {
       step = 'upsert_gmb_account'
       const upsertPayload: Record<string, unknown> = {
         organization_id,
+        connected_by: userData.user.id,
         account_name: account.accountName || account.account_name || account.name,
         account_id: String(account.name || '').includes('/') ? String(account.name).split('/').pop() : account.accountId || account.account_id,
         access_token: tokens.access_token,
@@ -269,6 +270,23 @@ serve(async (req) => {
         console.error('Upsert payload:', upsertPayload)
         upsertErrors.push({ account, error: error.message })
         continue
+      }
+
+      // Link this connected account to the current user (many-to-many)
+      try {
+        await supabaseAdminClient
+          .from('gmb_account_connections')
+          .upsert(
+            {
+              organization_id,
+              gmb_account_id: gmbAccount.id,
+              user_id: userData.user.id,
+            },
+            { onConflict: 'gmb_account_id,user_id' }
+          )
+      } catch (e) {
+        // non-fatal: account is saved, but user-scoped listing may be incomplete
+        console.error('Failed to upsert gmb_account_connections:', e)
       }
 
       // Fetch locations for this account

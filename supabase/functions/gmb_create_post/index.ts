@@ -6,6 +6,15 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+function renderTemplate(input: any, vars: Record<string, string>): string {
+  const s = String(input ?? '')
+  if (!s) return ''
+  return s.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, keyRaw) => {
+    const key = String(keyRaw || '').toLowerCase()
+    return vars[key] ?? ''
+  })
+}
+
 async function refreshAccessTokenIfNeeded(
   supabaseClient: any,
   account: any
@@ -145,6 +154,19 @@ serve(async (req) => {
       throw new Error(`Post not found: ${postError?.message}`)
     }
 
+    // Org variables (best-effort)
+    let orgName: string | null = null
+    try {
+      const { data: orgRow } = await supabaseAdminClient
+        .from('organizations')
+        .select('name')
+        .eq('id', organization_id)
+        .maybeSingle()
+      orgName = orgRow?.name ?? null
+    } catch (_e) {
+      orgName = null
+    }
+
     // Get target locations
     const targetLocationIds = location_ids || post.target_locations
     
@@ -169,13 +191,39 @@ serve(async (req) => {
         step = 'refresh_token'
         const accessToken = await refreshAccessTokenIfNeeded(supabaseAdminClient, location.gmb_account)
 
+        const addrObj = location?.address || {}
+        const addr =
+          addrObj?.formattedAddress ||
+          (Array.isArray(addrObj?.addressLines) ? addrObj.addressLines.filter(Boolean).join(', ') : '') ||
+          ''
+
+        const vars: Record<string, string> = {
+          // workshop/org
+          workshop_name: String(orgName || location?.location_name || ''),
+          organization_name: String(orgName || location?.location_name || ''),
+
+          // location
+          location_name: String(location?.location_name || ''),
+          city: String(addrObj?.locality || ''),
+          state: String(addrObj?.administrativeArea || addrObj?.regionCode || ''),
+          postal_code: String(addrObj?.postalCode || ''),
+          address: String(addr || ''),
+          category: String(location?.category || ''),
+          phone: String(location?.phone || ''),
+          website: String(location?.website || ''),
+        }
+
+        const renderedTitle = renderTemplate(post.title, vars)
+        const renderedContent = renderTemplate(post.content, vars)
+        const renderedActionUrl = renderTemplate(post.action_url, vars)
+
         // Prepare post payload
-        const postPayload = {
+        const postPayload: any = {
           languageCode: 'en',
-          summary: post.title || post.content.substring(0, 100),
+          summary: (renderedContent || renderedTitle || '').substring(0, 1500),
           callToAction: post.call_to_action ? {
             actionType: post.call_to_action,
-            url: post.action_url,
+            url: renderedActionUrl || post.action_url,
           } : undefined,
           media: post.media_urls?.map(url => ({
             mediaFormat: 'PHOTO',
@@ -186,7 +234,7 @@ serve(async (req) => {
         // Add type-specific fields
         if (post.post_type === 'EVENT' && post.event_details) {
           postPayload.event = {
-            title: post.event_details.title,
+            title: renderTemplate(post.event_details.title, vars),
             schedule: {
               startDate: post.event_details.start_date,
               endDate: post.event_details.end_date,
@@ -194,9 +242,9 @@ serve(async (req) => {
           }
         } else if (post.post_type === 'OFFER' && post.offer_details) {
           postPayload.offer = {
-            couponCode: post.offer_details.coupon_code,
-            redeemOnlineUrl: post.offer_details.redeem_url,
-            termsConditions: post.offer_details.terms,
+            couponCode: renderTemplate(post.offer_details.coupon_code, vars),
+            redeemOnlineUrl: renderTemplate(post.offer_details.redeem_url, vars),
+            termsConditions: renderTemplate(post.offer_details.terms, vars),
           }
         } else {
           postPayload.topicType = 'STANDARD'
@@ -221,6 +269,16 @@ serve(async (req) => {
 
         if (createResponse.ok) {
           successCount++
+          if (Array.isArray(targetLocationIds) && targetLocationIds.length === 1 && respJson?.name) {
+            try {
+              await supabaseAdminClient
+                .from('gmb_posts')
+                .update({ google_post_name: respJson.name })
+                .eq('id', post_id)
+            } catch (e) {
+              console.warn('Failed to update gmb_posts google_post_name:', e?.message || String(e))
+            }
+          }
           // Store per-location publication result (best-effort)
           try {
             await supabaseAdminClient

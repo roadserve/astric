@@ -20,17 +20,49 @@ function pickItems(df: any): any[] {
 }
 
 async function runOrg(supabase: any, orgId: string, login: string, password: string) {
-  const { data: keywords, error: kwErr } = await supabase
+  const BATCH_SIZE = 50
+
+  const { data: keywordsAll, error: kwErr } = await supabase
     .from("rank_keywords")
-    .select("id, keyword, location_name, language_code, gmb_location_id, location:gmb_locations(id, location_name, lat, lng)")
+    .select("id, keyword, location_name, language_code, gmb_location_id, created_at, location:gmb_locations(id, location_name, lat, lng)")
     .eq("organization_id", orgId)
     .eq("is_active", true)
     .eq("is_scheduled", true)
     .order("created_at", { ascending: false })
-    .limit(20)
+    .limit(1000)
 
   if (kwErr) throw kwErr
-  if (!keywords || keywords.length === 0) return { orgId, skipped: true, reason: "no_keywords" }
+  if (!keywordsAll || keywordsAll.length === 0) return { orgId, skipped: true, reason: "no_keywords" }
+
+  // Pick keywords with oldest (or missing) last fetched_at to avoid re-running the same newest rows forever.
+  const { data: pts, error: ptErr } = await supabase
+    .from("rank_points")
+    .select("rank_keyword_id, fetched_at")
+    .eq("organization_id", orgId)
+    .order("fetched_at", { ascending: false })
+    .limit(20000)
+  if (ptErr) throw ptErr
+
+  const latestFetched: Record<string, number> = {}
+  for (const p of pts || []) {
+    const kid = String(p?.rank_keyword_id || "")
+    if (!kid) continue
+    if (latestFetched[kid]) continue
+    const ts = p?.fetched_at ? new Date(p.fetched_at).getTime() : 0
+    latestFetched[kid] = ts || 0
+  }
+
+  const keywords = (keywordsAll as any[])
+    .slice()
+    .sort((a: any, b: any) => {
+      const aTs = latestFetched[String(a.id)] || 0
+      const bTs = latestFetched[String(b.id)] || 0
+      if (aTs !== bTs) return aTs - bTs
+      const ac = a?.created_at ? new Date(a.created_at).getTime() : 0
+      const bc = b?.created_at ? new Date(b.created_at).getTime() : 0
+      return ac - bc
+    })
+    .slice(0, BATCH_SIZE)
 
   const { data: runRow, error: runErr } = await supabase
     .from("rank_runs")
