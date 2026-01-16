@@ -6,6 +6,16 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 }
 
+async function fetchWithTimeout(input: string | URL, init: RequestInit = {}, timeoutMs = 15_000) {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 async function refreshAccessTokenIfNeeded(
   supabaseAdminClient: any,
   account: any
@@ -30,11 +40,11 @@ async function refreshAccessTokenIfNeeded(
     grant_type: "refresh_token",
   })
 
-  const resp = await fetch("https://oauth2.googleapis.com/token", {
+  const resp = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
-  })
+  }, 12_000)
 
   if (!resp.ok) {
     const t = await resp.text()
@@ -157,12 +167,11 @@ serve(async (req) => {
     // Best-effort enrichment: fetch a fuller single-location payload and store it as raw JSON.
     // We keep this conservative to avoid breaking sync if Google rejects any field in readMask.
     const fullReadMaskCandidates = [
-      "name,title,storeCode,storefrontAddress,phoneNumbers,websiteUri,categories,profile,regularHours,specialHours,serviceArea,metadata,latlng,openInfo,labels",
+      "name,title,storeCode,storefrontAddress,phoneNumbers,websiteUri,categories,profile,regularHours,specialHours,moreHours,serviceArea,metadata,latlng,openInfo,labels,locationState",
       readMask,
     ]
 
-    // Also fetch v4 location state to match GBP UI (Verified / Unverified / Pending edits etc).
-    // v1 Business Information API doesn't reliably expose verification fields.
+    // Verification state: use Verifications API (preferred). v4 is flaky/deprecated for some tenants.
     const v4ReadMask = "locationState,metadata,openInfo"
 
     for (const acc of accounts || []) {
@@ -209,6 +218,7 @@ serve(async (req) => {
             // Try to fetch a fuller payload for this location (best-effort).
             let rawLocationFull: any = null
             let rawLocationV4: any = null
+            let rawLocationV4Error: any = null
             const resourceName = typeof location?.name === "string" ? location.name : null // e.g. "locations/123"
             if (resourceName) {
               for (const mask of fullReadMaskCandidates) {
@@ -241,32 +251,82 @@ serve(async (req) => {
                 `https://mybusiness.googleapis.com/v4/accounts/${acc.account_id}/locations/${locationId}`,
               )
               v4Url.searchParams.set("readMask", v4ReadMask)
-              const v4Resp = await fetch(v4Url.toString(), {
+              const v4Resp = await fetchWithTimeout(v4Url.toString(), {
                 headers: {
                   Authorization: `Bearer ${token}`,
                   "Content-Type": "application/json",
                 },
-              })
+              }, 15_000)
               if (v4Resp.ok) {
                 rawLocationV4 = await v4Resp.json()
+              } else {
+                const errText = await v4Resp.text()
+                rawLocationV4Error = {
+                  status: v4Resp.status,
+                  body: errText.slice(0, 500),
+                }
               }
             } catch {
               // ignore
             }
 
+            // Verifications API (best-effort)
+            let verifications: any = null
+            let verificationsError: any = null
+            try {
+              step = "get_verifications_voice_of_merchant"
+              const vUrl = `https://mybusinessverifications.googleapis.com/v1/locations/${locationId}/VoiceOfMerchantState`
+              const vResp = await fetchWithTimeout(vUrl, {
+                headers: { Authorization: `Bearer ${token}` },
+              }, 15_000)
+              if (vResp.ok) {
+                verifications = await vResp.json()
+              } else {
+                const t = await vResp.text()
+                verificationsError = { status: vResp.status, body: t.slice(0, 500) }
+              }
+            } catch (e: any) {
+              verificationsError = { exception: e?.message || String(e) }
+            }
+
             const v4State = rawLocationV4?.locationState || null
+            const v1VerificationState =
+              rawLocationFull?.metadata?.verificationState ||
+              location?.metadata?.verificationState ||
+              null
+            const hasVoice =
+              typeof verifications?.hasVoiceOfMerchant === "boolean"
+                ? verifications.hasVoiceOfMerchant
+                : typeof verifications?.has_voice_of_merchant === "boolean"
+                  ? verifications.has_voice_of_merchant
+                  : undefined
+
             const computedIsVerified =
-              typeof v4State?.isVerified === "boolean"
-                ? v4State.isVerified
-                : location.metadata?.mapsUri
-                  ? true
-                  : false
+              typeof hasVoice === "boolean"
+                ? hasVoice
+                : typeof v4State?.isVerified === "boolean"
+                  ? v4State.isVerified
+                  : typeof v1VerificationState === "string"
+                    ? v1VerificationState.toUpperCase().includes("VERIFIED")
+                    : undefined
             const computedIsPublished =
               typeof v4State?.isPublished === "boolean"
                 ? v4State.isPublished
-                : true
+                : location?.metadata?.mapsUri
+                  ? true
+                  : undefined
 
-            await supabaseAdminClient
+            const primaryCategory =
+              location.categories?.primaryCategory?.displayName ||
+              rawLocationFull?.categories?.primaryCategory?.displayName ||
+              null
+            const additionalCategories = Array.isArray(location.categories?.additionalCategories)
+              ? location.categories.additionalCategories.map((c: any) => c?.displayName).filter(Boolean)
+              : Array.isArray(rawLocationFull?.categories?.additionalCategories)
+                ? rawLocationFull.categories.additionalCategories.map((c: any) => c?.displayName).filter(Boolean)
+                : null
+
+            const { data: upsertedLoc, error: upsertErr } = await supabaseAdminClient
               .from("gmb_locations")
               .upsert(
                 {
@@ -278,26 +338,132 @@ serve(async (req) => {
                   address: location.storefrontAddress ?? location.address,
                   phone: location.phoneNumbers?.primaryPhone,
                   website: location.websiteUri,
-                  category: location.categories?.primaryCategory?.displayName,
+                  category: primaryCategory,
+                  primary_category: primaryCategory,
                   categories_json: location.categories ?? null,
-                  additional_categories: Array.isArray(location.categories?.additionalCategories)
-                    ? location.categories.additionalCategories.map((c: any) => c?.displayName).filter(Boolean)
-                    : null,
+                  additional_categories: additionalCategories,
                   description: location.profile?.description,
                   hours: location.regularHours,
+                  special_hours: rawLocationFull?.specialHours ?? null,
+                  service_area: rawLocationFull?.serviceArea ?? null,
+                  open_info: rawLocationFull?.openInfo ?? rawLocationV4?.openInfo ?? null,
+                  labels: Array.isArray(rawLocationFull?.labels) ? rawLocationFull.labels : null,
+                  more_hours: rawLocationFull?.moreHours ?? null,
                   attributes: location.attributes,
                   lat: location.latlng?.latitude ?? null,
                   lng: location.latlng?.longitude ?? null,
-                  is_verified: computedIsVerified,
-                  is_published: computedIsPublished,
+                  ...(computedIsVerified !== undefined ? { is_verified: computedIsVerified } : {}),
+                  ...(computedIsPublished !== undefined ? { is_published: computedIsPublished } : {}),
                   raw_location: location ?? null,
-                  raw_location_full: rawLocationV4 || rawLocationFull
-                    ? { v1: rawLocationFull, v4: rawLocationV4 }
+                  raw_location_full: rawLocationV4 || rawLocationFull || rawLocationV4Error || verifications || verificationsError
+                    ? {
+                      v1: rawLocationFull,
+                      v4: rawLocationV4,
+                      v4_error: rawLocationV4Error,
+                      verifications,
+                      verifications_error: verificationsError,
+                    }
                     : null,
                   last_synced_at: new Date().toISOString(),
                 },
                 { onConflict: "gmb_account_id,location_id" }
               )
+              .select("id")
+              .single()
+
+            if (upsertErr) {
+              throw new Error(upsertErr.message)
+            }
+
+            const locationDbId = upsertedLoc?.id
+            if (locationDbId) {
+              // Normalize attributes (replace existing for this location)
+              try {
+                await supabaseAdminClient
+                  .from("gmb_location_attributes")
+                  .delete()
+                  .eq("gmb_location_id", locationDbId)
+
+                const attrs = Array.isArray(rawLocationFull?.attributes)
+                  ? rawLocationFull.attributes
+                  : Array.isArray(location.attributes)
+                    ? location.attributes
+                    : []
+                const attrRows = attrs
+                  .map((a: any) => {
+                    const attributeId = a?.attributeId || a?.name || null
+                    const values = Array.isArray(a?.values) ? a.values : Array.isArray(a?.value) ? a.value : []
+                    if (!attributeId) return null
+                    if (!values.length) {
+                      return [{
+                        organization_id,
+                        gmb_location_id: locationDbId,
+                        attribute_id: String(attributeId),
+                        value: null,
+                        raw: a ?? null,
+                      }]
+                    }
+                    return values.map((v: any) => ({
+                      organization_id,
+                      gmb_location_id: locationDbId,
+                      attribute_id: String(attributeId),
+                      value: v != null ? String(v) : null,
+                      raw: a ?? null,
+                    }))
+                  })
+                  .flat()
+                  .filter(Boolean)
+
+                if (attrRows.length) {
+                  await supabaseAdminClient
+                    .from("gmb_location_attributes")
+                    .insert(attrRows)
+                }
+              } catch (e) {
+                console.warn("Failed to normalize attributes:", e?.message || String(e))
+              }
+
+              // Normalize categories (replace existing for this location)
+              try {
+                await supabaseAdminClient
+                  .from("gmb_location_categories")
+                  .delete()
+                  .eq("gmb_location_id", locationDbId)
+
+                const cats: any[] = []
+                const primary = location.categories?.primaryCategory ?? rawLocationFull?.categories?.primaryCategory
+                if (primary) {
+                  cats.push({
+                    organization_id,
+                    gmb_location_id: locationDbId,
+                    category_id: primary?.name ?? primary?.categoryId ?? null,
+                    category_name: primary?.displayName ?? primary?.name ?? null,
+                    category_type: "primary",
+                    raw: primary ?? null,
+                  })
+                }
+                const additional = location.categories?.additionalCategories ?? rawLocationFull?.categories?.additionalCategories ?? []
+                if (Array.isArray(additional)) {
+                  for (const c of additional) {
+                    cats.push({
+                      organization_id,
+                      gmb_location_id: locationDbId,
+                      category_id: c?.name ?? c?.categoryId ?? null,
+                      category_name: c?.displayName ?? c?.name ?? null,
+                      category_type: "additional",
+                      raw: c ?? null,
+                    })
+                  }
+                }
+                if (cats.length) {
+                  await supabaseAdminClient
+                    .from("gmb_location_categories")
+                    .insert(cats)
+                }
+              } catch (e) {
+                console.warn("Failed to normalize categories:", e?.message || String(e))
+              }
+            }
           }
 
           accountLocations += locations.length

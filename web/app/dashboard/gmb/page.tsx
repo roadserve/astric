@@ -74,6 +74,12 @@ interface GmbLocation {
   category?: string
   is_verified?: boolean
   is_published?: boolean
+  raw_location_full?: any
+  special_hours?: any
+  service_area?: any
+  open_info?: any
+  labels?: string[] | null
+  more_hours?: any
 }
 
 interface GmbReview {
@@ -103,8 +109,35 @@ interface GmbPost {
   status: string
   scheduled_at: string | null
   published_at: string | null
+  google_post_name?: string | null
   created_at: string
   updated_at: string
+}
+
+interface GmbPostTemplate {
+  id: string
+  name: string
+  content: string
+  title: string | null
+  call_to_action: string | null
+  action_url: string | null
+  media_urls: string[] | null
+  post_type: string
+  event_details?: any
+  offer_details?: any
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+interface GmbPostPublication {
+  id: string
+  post_id: string
+  gmb_location_id: string
+  google_post_name: string | null
+  status: string
+  error_text: string | null
+  created_at: string
 }
 
 interface GmbInsightPoint {
@@ -158,7 +191,11 @@ export default function GmbDashboardPage() {
   const [locations, setLocations] = useState<GmbLocation[]>([])
   const [reviews, setReviews] = useState<GmbReview[]>([])
   const [posts, setPosts] = useState<GmbPost[]>([])
+  const [postTemplates, setPostTemplates] = useState<GmbPostTemplate[]>([])
+  const [postPublications, setPostPublications] = useState<GmbPostPublication[]>([])
   const [insights, setInsights] = useState<GmbInsightPoint[]>([])
+  const [searchKeywordsMonthly, setSearchKeywordsMonthly] = useState<any[]>([])
+  const [insightsPayload, setInsightsPayload] = useState<any>(null)
   const [bulkUpdates, setBulkUpdates] = useState<BulkUpdateRow[]>([])
   const [products, setProducts] = useState<GmbProduct[]>([])
   const [services, setServices] = useState<GmbService[]>([])
@@ -178,6 +215,7 @@ export default function GmbDashboardPage() {
   const [qnaLoading, setQnaLoading] = useState(false)
   const [qnaForm, setQnaForm] = useState({ locationId: '', customerName: '', customerContact: '', question: '' })
   const [qnaAnswerDrafts, setQnaAnswerDrafts] = useState<Record<string, string>>({})
+  const [qnaView, setQnaView] = useState<'open' | 'answered' | 'closed' | 'all'>('open')
   const [rankTest, setRankTest] = useState({ keyword: 'car garage near me', locationName: 'Mumbai,Maharashtra,India' })
   const [rankTesting, setRankTesting] = useState(false)
   const [rankTestResult, setRankTestResult] = useState<any>(null)
@@ -187,6 +225,13 @@ export default function GmbDashboardPage() {
   const [rankRuns, setRankRuns] = useState<any[]>([])
   const [rankLoading, setRankLoading] = useState(false)
   const [rankRunning, setRankRunning] = useState(false)
+  const [rankLocationFilter, setRankLocationFilter] = useState<string>('all')
+  const [rankIncludeGlobal, setRankIncludeGlobal] = useState(true)
+  const [rankRange, setRankRange] = useState<'1w' | '1m' | '6m' | '1y' | 'all'>('1m')
+  const [rankMode, setRankMode] = useState<'keyword' | 'brand'>('keyword')
+  const [rankChangeTab, setRankChangeTab] = useState<'increased' | 'decreased'>('increased')
+  const [rankPoints, setRankPoints] = useState<any[]>([])
+  const [rankImportLocationId, setRankImportLocationId] = useState<string>('') // import from GBP search keywords
   const [rankKeywordForm, setRankKeywordForm] = useState({
     keyword: '',
     gmbLocationId: '',
@@ -207,6 +252,9 @@ export default function GmbDashboardPage() {
   const [syncing, setSyncing] = useState(false)
   const [syncingReviews, setSyncingReviews] = useState(false)
   const [syncingInsights, setSyncingInsights] = useState(false)
+  const [syncingPosts, setSyncingPosts] = useState(false)
+  const [syncingKeywords, setSyncingKeywords] = useState(false)
+  const [insightsScope, setInsightsScope] = useState<'all' | 'selected' | 'verified' | 'unverified' | 'published' | 'unpublished'>('all')
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(true)
   const [autoSyncStatus, setAutoSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle')
   const [autoSyncLastAt, setAutoSyncLastAt] = useState<string | null>(null)
@@ -301,7 +349,9 @@ export default function GmbDashboardPage() {
     | 'lowest_reviews'
   >('none')
   const [overviewShowHidden, setOverviewShowHidden] = useState(false)
-  const [overviewSubtab, setOverviewSubtab] = useState<'listings' | 'performance' | 'detailed_comparison' | 'duplicate_finder'>('listings')
+  const [overviewSubtab, setOverviewSubtab] = useState<
+    'command_center' | 'listings' | 'performance' | 'detailed_comparison' | 'duplicate_finder'
+  >('command_center')
   const [overviewRange, setOverviewRange] = useState<'1m' | '6m' | '1y' | 'all'>('6m')
   const [overviewShowMaps, setOverviewShowMaps] = useState(true)
   const [overviewShowSearch, setOverviewShowSearch] = useState(true)
@@ -319,6 +369,39 @@ export default function GmbDashboardPage() {
     scheduledAt: '',
     targetLocationIds: [] as string[],
   })
+  const [postTemplateForm, setPostTemplateForm] = useState({ name: '' })
+  const [selectedPostTemplateId, setSelectedPostTemplateId] = useState<string>('')
+  const [postsSearch, setPostsSearch] = useState<string>('')
+  const [postsLoadingMore, setPostsLoadingMore] = useState(false)
+  const [postsHasMore, setPostsHasMore] = useState(false)
+  const [postsNextBefore, setPostsNextBefore] = useState<string | null>(null)
+  const [postTokenTarget, setPostTokenTarget] = useState<'title' | 'content' | 'actionUrl'>('content')
+
+  const POSTS_PAGE_SIZE = 500
+  const POSTS_UI_PAGE_SIZE = 10
+  const [postsPage, setPostsPage] = useState(1)
+
+  const renderPostTemplate = (input: any, vars: Record<string, string>) => {
+    const s = String(input ?? '')
+    if (!s) return ''
+    return s.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, keyRaw) => {
+      const key = String(keyRaw || '').toLowerCase()
+      return vars[key] ?? ''
+    })
+  }
+
+  const postVariables = useMemo(
+    () => [
+      { key: 'location_name', label: 'Location name', token: '{{location_name}}' },
+      { key: 'city', label: 'City', token: '{{city}}' },
+      { key: 'state', label: 'State', token: '{{state}}' },
+      { key: 'phone', label: 'Phone', token: '{{phone}}' },
+      { key: 'website', label: 'Website', token: '{{website}}' },
+      { key: 'address', label: 'Address', token: '{{address}}' },
+      { key: 'category', label: 'Category', token: '{{category}}' },
+    ],
+    []
+  )
   const [updateData, setUpdateData] = useState({
     description: '',
     phone: '',
@@ -351,6 +434,17 @@ export default function GmbDashboardPage() {
   const [mediaSyncing, setMediaSyncing] = useState(false)
   const [mediaViewerLocationId, setMediaViewerLocationId] = useState<string | null>(null)
   const [mediaAssets, setMediaAssets] = useState<any[]>([])
+  const [workspaceLocationId, setWorkspaceLocationId] = useState<string | null>(null)
+  const [dbFreshness, setDbFreshness] = useState<any>(null)
+  const [dbFreshnessLoading, setDbFreshnessLoading] = useState(false)
+  const [lastSyncRunAt, setLastSyncRunAt] = useState<Record<string, string | null>>({
+    locations: null,
+    reviews: null,
+    insights: null,
+    keywords: null,
+    media: null,
+    posts: null,
+  })
 
   useEffect(() => {
     init()
@@ -516,11 +610,35 @@ export default function GmbDashboardPage() {
       },
       {
         id: 'sync_insights',
-        label: 'Sync insights (30 days)',
+        label: 'Sync insights (60 days)',
         hint: 'Performance',
         keywords: 'sync insights analytics performance',
         run: () => handleSyncInsights(),
         disabled: syncingInsights || !organizationId || accounts.length === 0,
+      },
+      {
+        id: 'sync_media',
+        label: 'Sync media (photos)',
+        hint: 'Uploads logo/cover',
+        keywords: 'sync media photos images logo cover',
+        run: () => handleSyncMediaAll(),
+        disabled: mediaSyncing || !organizationId || accounts.length === 0,
+      },
+      {
+        id: 'sync_posts',
+        label: 'Sync posts',
+        hint: 'Fetch Google posts',
+        keywords: 'sync posts local posts refresh',
+        run: () => handleSyncPosts(),
+        disabled: syncingPosts || !organizationId || accounts.length === 0,
+      },
+      {
+        id: 'sync_keywords',
+        label: 'Sync keywords',
+        hint: 'Search keywords',
+        keywords: 'sync keywords search impressions',
+        run: () => handleSyncKeywords(),
+        disabled: syncingKeywords || !organizationId || accounts.length === 0,
       },
       {
         id: 'toggle_autosync',
@@ -609,6 +727,8 @@ export default function GmbDashboardPage() {
     setModuleTab,
     syncing,
     syncingInsights,
+    syncingKeywords,
+    syncingPosts,
     syncingReviews,
   ])
 
@@ -695,6 +815,16 @@ export default function GmbDashboardPage() {
       )
       .on(
         'postgres_changes',
+        { event: '*', schema: 'public', table: 'gmb_post_templates', filter: `organization_id=eq.${organizationId}` },
+        scheduleRefresh
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'gmb_post_publications', filter: `organization_id=eq.${organizationId}` },
+        scheduleRefresh
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'gmb_insights', filter: `organization_id=eq.${organizationId}` },
         scheduleRefresh
       )
@@ -738,6 +868,8 @@ export default function GmbDashboardPage() {
     let lastReviewsSyncAt = 0
     let lastInsightsSyncAt = 0
     let lastSearchKeywordsSyncAt = 0
+    let lastMediaSyncAt = 0
+    let lastPostsSyncAt = 0
 
     const invokeSilent = async (name: string, body: any) => {
       // If auth session is missing/expired, edge functions will 401 (often with non-JSON body).
@@ -761,22 +893,39 @@ export default function GmbDashboardPage() {
       try {
         const now = Date.now()
 
-        // Reviews + insights frequently (10 min)
-        if (now - lastInsightsSyncAt > 10 * 60_000) {
-          await invokeSilent('gmb_sync_insights', { organization_id: organizationId, days: 30 })
+        // All sync jobs hourly (auto)
+        const hourly = 60 * 60_000
+
+        if (now - lastInsightsSyncAt > hourly) {
+          await invokeSilent('gmb_sync_insights', { organization_id: organizationId, days: 60 })
           lastInsightsSyncAt = now
         }
-        if (now - lastSearchKeywordsSyncAt > 10 * 60_000) {
+        if (now - lastSearchKeywordsSyncAt > hourly) {
           await invokeSilent('gmb_sync_search_keywords', { organization_id: organizationId, months: 3 })
           lastSearchKeywordsSyncAt = now
         }
-        if (now - lastReviewsSyncAt > 10 * 60_000) {
+        if (now - lastReviewsSyncAt > hourly) {
           await invokeSilent('gmb_sync_reviews', { organization_id: organizationId })
           lastReviewsSyncAt = now
         }
 
-        // Locations less frequently (60 min)
-        if (now - lastLocationsSyncAt > 60 * 60_000) {
+        if (now - lastMediaSyncAt > hourly) {
+          await invokeSilent('gmb_sync_media', {
+            organization_id: organizationId,
+            download: true,
+            max_download_per_location: 2,
+            download_limits: { logo: 1, cover: 1, profile: 1, additional: 0 },
+          })
+          lastMediaSyncAt = now
+        }
+
+        if (now - lastPostsSyncAt > hourly) {
+          await invokeSilent('gmb_sync_posts', { organization_id: organizationId })
+          lastPostsSyncAt = now
+        }
+
+        // Locations
+        if (now - lastLocationsSyncAt > hourly) {
           await invokeSilent('gmb_sync_locations', { organization_id: organizationId })
           lastLocationsSyncAt = now
         }
@@ -1035,6 +1184,21 @@ export default function GmbDashboardPage() {
     await loadQna(organizationId)
   }
 
+  const closeQnaRequest = async (id: string) => {
+    if (!organizationId) return
+    const { error } = await supabase
+      .from('gmb_qna_requests')
+      .update({ status: 'closed' })
+      .eq('organization_id', organizationId)
+      .eq('id', id)
+    if (error) {
+      notify({ variant: 'error', title: 'Failed to close request', message: error.message })
+      return
+    }
+    notify({ variant: 'success', title: 'Q&A closed' })
+    await loadQna(organizationId)
+  }
+
   const createReviewTemplate = async () => {
     if (!organizationId) return
     if (!templateForm.name.trim() || !templateForm.templateText.trim()) {
@@ -1180,22 +1344,46 @@ export default function GmbDashboardPage() {
       if (kwErr) throw kwErr
       setRankKeywords(kws || [])
 
-      const { data: pts, error: ptErr } = await supabase
+      const now = Date.now()
+      const since =
+        rankRange === '1w'
+          ? new Date(now - 7 * 24 * 60 * 60 * 1000)
+          : rankRange === '1m'
+            ? new Date(now - 30 * 24 * 60 * 60 * 1000)
+            : rankRange === '6m'
+              ? new Date(now - 180 * 24 * 60 * 60 * 1000)
+              : rankRange === '1y'
+                ? new Date(now - 365 * 24 * 60 * 60 * 1000)
+                : null
+
+      // 1) Always fetch latest + previous ranks from all-time points (so tables/cards never go blank).
+      const { data: ptsAll, error: ptAllErr } = await supabase
         .from('rank_points')
         .select('id, rank_keyword_id, rank_position, found_title, fetched_at, raw')
         .eq('organization_id', orgId)
         .order('fetched_at', { ascending: false })
-        .limit(500)
-      if (ptErr) throw ptErr
+        .limit(5000)
+      if (ptAllErr) throw ptAllErr
 
       const map: Record<string, any> = {}
       const prev: Record<string, any> = {}
-      for (const p of pts || []) {
+      for (const p of ptsAll || []) {
         if (!map[p.rank_keyword_id]) map[p.rank_keyword_id] = p
         else if (!prev[p.rank_keyword_id]) prev[p.rank_keyword_id] = p
       }
       setRankLatestByKeyword(map)
       setRankPrevByKeyword(prev)
+
+      // 2) Fetch range-limited points for chart only.
+      const { data: ptsRange, error: ptRangeErr } = await supabase
+        .from('rank_points')
+        .select('id, rank_keyword_id, rank_position, fetched_at')
+        .eq('organization_id', orgId)
+        .gte('fetched_at', since ? since.toISOString() : '1900-01-01T00:00:00.000Z')
+        .order('fetched_at', { ascending: false })
+        .limit(5000)
+      if (ptRangeErr) throw ptRangeErr
+      setRankPoints(ptsRange || [])
 
       const { data: runs, error: runsErr } = await supabase
         .from('rank_runs')
@@ -1206,6 +1394,7 @@ export default function GmbDashboardPage() {
       if (!runsErr) setRankRuns(runs || [])
     } catch (e: any) {
       console.error('Error loading rank data:', e)
+      notify({ variant: 'error', title: 'Failed to load rank tracking data', message: e?.message || String(e) })
     } finally {
       setRankLoading(false)
     }
@@ -1492,17 +1681,24 @@ export default function GmbDashboardPage() {
     try {
       // Use Edge Function to avoid PostgREST/RLS issues when fetching tokens-backed tables.
       const { data, error } = await supabase.functions.invoke('gmb_get_data', {
-        body: { organization_id: orgId },
+        body: { organization_id: orgId, posts_limit: POSTS_PAGE_SIZE },
       })
 
       if (error) throw error
 
       setAccounts(data?.accounts || [])
       setLocations(data?.locations || [])
-      setPosts(data?.posts || [])
+      const nextPosts = Array.isArray(data?.posts) ? data.posts : []
+      setPosts(nextPosts)
+      setPostsNextBefore(nextPosts.length ? (nextPosts[nextPosts.length - 1] as any)?.created_at ?? null : null)
+      setPostsHasMore(nextPosts.length >= POSTS_PAGE_SIZE)
+      setPostTemplates(data?.post_templates || [])
+      setPostPublications(data?.post_publications || [])
       setReviews(data?.reviews || [])
       setInsights(data?.insights || [])
+      setSearchKeywordsMonthly(data?.search_keywords_monthly || [])
       setBulkUpdates(data?.bulk_updates || [])
+      setInsightsPayload(data?.insights_payload || null)
     } catch (error) {
       console.error('Error loading GMB data:', error)
     }
@@ -1555,14 +1751,382 @@ export default function GmbDashboardPage() {
   }, [filteredReviews, reviewsView])
 
   const postsForView = useMemo(() => {
-    if (postsView === 'drafts') return posts.filter((p) => p.status === 'draft')
-    if (postsView === 'scheduled') return posts.filter((p) => p.status === 'scheduled')
-    if (postsView === 'published') return posts.filter((p) => p.status === 'published')
-    if (postsView === 'failed') return posts.filter((p) => p.status === 'failed')
-    return posts
-  }, [posts, postsView])
+    let list = posts
+    if (postsView === 'drafts') list = list.filter((p) => p.status === 'draft')
+    if (postsView === 'scheduled') list = list.filter((p) => p.status === 'scheduled')
+    if (postsView === 'published') list = list.filter((p) => p.status === 'published')
+    if (postsView === 'failed') list = list.filter((p) => p.status === 'failed')
 
-  const insightsByLocationTotals = useMemo(() => {
+    const q = postsSearch.trim().toLowerCase()
+    if (q) {
+      list = list.filter((p) => {
+        const t = String(p.title || '').toLowerCase()
+        const c = String(p.content || '').toLowerCase()
+        return t.includes(q) || c.includes(q)
+      })
+    }
+
+    return list
+  }, [posts, postsSearch, postsView])
+
+  const postsPageCount = useMemo(() => {
+    const total = postsForView.length
+    return Math.max(1, Math.ceil(total / POSTS_UI_PAGE_SIZE))
+  }, [postsForView.length])
+
+  const postsPageItems = useMemo(() => {
+    const start = (postsPage - 1) * POSTS_UI_PAGE_SIZE
+    return postsForView.slice(start, start + POSTS_UI_PAGE_SIZE)
+  }, [postsForView, postsPage])
+
+  useEffect(() => {
+    // Reset pagination + selection when changing filters/view.
+    setPostsPage(1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [postsView, postsSearch])
+
+  const handlePostsPrevPage = () => {
+    setPostsPage((p) => Math.max(1, p - 1))
+  }
+
+  const handlePostsNextPage = async () => {
+    const atEnd = postsPage >= postsPageCount
+    if (!atEnd) {
+      setPostsPage((p) => Math.min(postsPageCount, p + 1))
+      return
+    }
+    if (postsHasMore && !postsLoadingMore) {
+      await loadMorePosts()
+      setPostsPage((p) => p + 1)
+    }
+  }
+
+  const insertPostVariable = (token: string) => {
+    setPostForm((p) => {
+      const field = postTokenTarget
+      const current = String((p as any)[field] || '')
+      const next = current ? `${current} ${token}` : token
+      return { ...p, [field]: next } as any
+    })
+  }
+
+  const postPreviewLocation = useMemo(() => {
+    const first = postForm.targetLocationIds?.[0]
+    if (!first) return null
+    return locations.find((l) => l.id === first) || null
+  }, [locations, postForm.targetLocationIds])
+
+  const postPreviewVars = useMemo(() => {
+    const l: any = postPreviewLocation
+    const addrObj = l?.address || {}
+    const addr =
+      addrObj?.formattedAddress ||
+      (Array.isArray(addrObj?.addressLines) ? addrObj.addressLines.filter(Boolean).join(', ') : '') ||
+      ''
+    return {
+      workshop_name: String(l?.location_name || ''),
+      organization_name: String(l?.location_name || ''),
+      location_name: String(l?.location_name || ''),
+      city: String(addrObj?.locality || ''),
+      state: String(addrObj?.administrativeArea || addrObj?.regionCode || ''),
+      postal_code: String(addrObj?.postalCode || ''),
+      address: String(addr || ''),
+      category: String(l?.category || ''),
+      phone: String(l?.phone || ''),
+      website: String(l?.website || ''),
+    } as Record<string, string>
+  }, [postPreviewLocation])
+
+  const scopedLocations = useMemo(() => {
+    if (insightsScope === 'selected' && selectedLocations.length) {
+      return locations.filter((l) => selectedLocations.includes(l.id))
+    }
+    if (insightsScope === 'verified') return locations.filter((l) => !!l.is_verified)
+    if (insightsScope === 'unverified') return locations.filter((l) => !l.is_verified)
+    if (insightsScope === 'published') return locations.filter((l) => !!l.is_published)
+    if (insightsScope === 'unpublished') return locations.filter((l) => !l.is_published)
+    return locations
+  }, [insightsScope, locations, selectedLocations])
+
+  const scopedLocationIdSet = useMemo(() => new Set(scopedLocations.map((l) => l.id)), [scopedLocations])
+
+  const scopedInsights = useMemo(
+    () => insights.filter((i) => scopedLocationIdSet.has(i.gmb_location_id)),
+    [insights, scopedLocationIdSet]
+  )
+
+  const scopedReviews = useMemo(
+    () => reviews.filter((r) => scopedLocationIdSet.has(r.gmb_location_id)),
+    [reviews, scopedLocationIdSet]
+  )
+
+  const scopedKeywords = useMemo(
+    () => searchKeywordsMonthly.filter((k) => scopedLocationIdSet.has(k.gmb_location_id)),
+    [searchKeywordsMonthly, scopedLocationIdSet]
+  )
+
+  const gbpKeywordMonthLatest = useMemo(() => {
+    const months = Array.from(
+      new Set(searchKeywordsMonthly.map((r: any) => String(r?.month || '')).filter(Boolean))
+    ).sort()
+    return months[months.length - 1] || null
+  }, [searchKeywordsMonthly])
+
+  const gbpKeywordIdeas = useMemo(() => {
+    const month = gbpKeywordMonthLatest
+    if (!month) return []
+    const locId = rankImportLocationId || rankLocationFilter
+    const filterLocationId = locId && locId !== 'all' ? locId : null
+
+    const sum: Record<string, number> = {}
+    for (const r of searchKeywordsMonthly as any[]) {
+      if (String(r?.month || '') !== month) continue
+      if (filterLocationId && String(r?.gmb_location_id || '') !== filterLocationId) continue
+      const k = String(r?.keyword || '').trim()
+      if (!k) continue
+      sum[k] = (sum[k] || 0) + Number(r?.impressions || 0)
+    }
+    return Object.entries(sum)
+      .map(([keyword, impressions]) => ({ keyword, impressions }))
+      .sort((a, b) => b.impressions - a.impressions)
+      .slice(0, 30)
+  }, [gbpKeywordMonthLatest, rankImportLocationId, rankLocationFilter, searchKeywordsMonthly])
+
+  const trackedKeywordsForView = useMemo(() => {
+    if (rankLocationFilter === 'all') return rankKeywords
+    return rankKeywords.filter((k: any) => {
+      const lid = String(k?.gmb_location_id || '')
+      if (!lid) return !!rankIncludeGlobal
+      return lid === rankLocationFilter
+    })
+  }, [rankIncludeGlobal, rankKeywords, rankLocationFilter])
+
+  const rankSummary = useMemo(() => {
+    const scoped = trackedKeywordsForView
+    const latestRanks = scoped
+      .map((k: any) => rankLatestByKeyword[k.id]?.rank_position)
+      .filter((x: any) => x != null)
+      .map((x: any) => Number(x))
+
+    const avgRank =
+      latestRanks.length
+        ? Math.round((latestRanks.reduce((a: number, b: number) => a + b, 0) / latestRanks.length) * 100) / 100
+        : null
+
+    // Visibility: normalize rank 1..20 => 100..0, beyond 20 => 0
+    const visibilityScore =
+      latestRanks.length
+        ? Math.round(
+            (latestRanks.reduce((acc: number, r: number) => {
+              const rr = Number(r)
+              if (!Number.isFinite(rr)) return acc
+              if (rr <= 1) return acc + 1
+              if (rr >= 20) return acc + 0
+              return acc + (20 - rr) / 19
+            }, 0) /
+              latestRanks.length) *
+              1000
+          ) / 10
+        : null
+
+    let improved = 0
+    let dropped = 0
+    for (const k of scoped as any[]) {
+      const latest = rankLatestByKeyword[k.id]
+      const prev = rankPrevByKeyword[k.id]
+      if (latest?.rank_position == null || prev?.rank_position == null) continue
+      const d = Number(prev.rank_position) - Number(latest.rank_position)
+      if (d > 0) improved += 1
+      if (d < 0) dropped += 1
+    }
+
+    return {
+      total: scoped.length,
+      avgRank,
+      visibilityScore,
+      improved,
+      dropped,
+    }
+  }, [rankLatestByKeyword, rankPrevByKeyword, trackedKeywordsForView])
+
+  const rankChartSeries = useMemo(() => {
+    // bucket by day
+    const scopedIds = new Set(trackedKeywordsForView.map((k: any) => String(k?.id)))
+    const buckets: Record<string, { sum: number; count: number }> = {}
+    for (const p of rankPoints as any[]) {
+      const kid = String(p?.rank_keyword_id || '')
+      if (!kid || !scopedIds.has(kid)) continue
+      const pos = p?.rank_position
+      if (pos == null) continue
+      const ts = p?.fetched_at ? new Date(p.fetched_at) : null
+      if (!ts || isNaN(ts.getTime())) continue
+      const key = ts.toISOString().slice(0, 10)
+      if (!buckets[key]) buckets[key] = { sum: 0, count: 0 }
+      buckets[key].sum += Number(pos)
+      buckets[key].count += 1
+    }
+    return Object.entries(buckets)
+      .map(([date, v]) => ({ date, avg_rank: v.count ? Math.round((v.sum / v.count) * 100) / 100 : null }))
+      .sort((a, b) => (a.date > b.date ? 1 : -1))
+      .slice(-32)
+  }, [rankPoints, trackedKeywordsForView])
+
+  const rankChangeRows = useMemo(() => {
+    const rows = trackedKeywordsForView
+      .map((k: any) => {
+        const latest = rankLatestByKeyword[k.id]
+        const prev = rankPrevByKeyword[k.id]
+        const latestRank = latest?.rank_position != null ? Number(latest.rank_position) : null
+        const delta = latest?.rank_position != null && prev?.rank_position != null ? Number(prev.rank_position) - Number(latest.rank_position) : null
+        const listings = k.gmb_location_id ? 1 : locations.length
+        return {
+          id: k.id,
+          keyword: String(k.keyword || ''),
+          latestRank,
+          delta,
+          listings,
+        }
+      })
+      .filter((r) => r.keyword)
+
+    const filtered =
+      rankChangeTab === 'increased'
+        ? rows.filter((r) => (r.delta ?? 0) > 0).sort((a, b) => (b.delta ?? 0) - (a.delta ?? 0))
+        : rows.filter((r) => (r.delta ?? 0) < 0).sort((a, b) => (a.delta ?? 0) - (b.delta ?? 0))
+
+    return filtered.slice(0, 50)
+  }, [locations.length, rankChangeTab, rankLatestByKeyword, rankPrevByKeyword, trackedKeywordsForView])
+
+  const insightsSummary = useMemo(() => {
+    const totals: Record<string, number> = {}
+    for (const r of scopedInsights) {
+      const k = r.metric_type
+      const v = Number(r.metric_value || 0)
+      totals[k] = (totals[k] || 0) + v
+    }
+    const impressions =
+      (totals['BUSINESS_IMPRESSIONS_DESKTOP_MAPS'] || 0) +
+      (totals['BUSINESS_IMPRESSIONS_MOBILE_MAPS'] || 0) +
+      (totals['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH'] || 0) +
+      (totals['BUSINESS_IMPRESSIONS_MOBILE_SEARCH'] || 0)
+    const websiteClicks = totals['WEBSITE_CLICKS'] || 0
+    const calls = totals['CALL_CLICKS'] || 0
+    const directions = totals['BUSINESS_DIRECTION_REQUESTS'] || 0
+
+    const totalReviews = scopedReviews.length
+    const unreplied = scopedReviews.filter((r) => !r.is_replied).length
+    const ratingSum = scopedReviews.reduce((acc, r) => acc + (Number(r.rating || 0)), 0)
+    const avgRating = totalReviews ? Math.round((ratingSum / totalReviews) * 100) / 100 : 0
+    const responseRate = totalReviews ? Math.round((1 - unreplied / totalReviews) * 1000) / 10 : 0
+
+    const latestMonth = scopedKeywords.reduce((max: string | null, r: any) => {
+      const m = r?.month
+      if (!m) return max
+      return !max || String(m) > String(max) ? String(m) : max
+    }, null)
+    const keywordMap: Record<string, number> = {}
+    for (const r of scopedKeywords) {
+      if (latestMonth && String(r?.month) !== String(latestMonth)) continue
+      const key = String(r?.keyword || '').trim()
+      if (!key) continue
+      keywordMap[key] = (keywordMap[key] || 0) + Number(r?.impressions || 0)
+    }
+    const topKeyword = Object.entries(keywordMap)
+      .map(([keyword, impressions]) => ({ keyword, impressions }))
+      .sort((a, b) => b.impressions - a.impressions)[0]
+
+    const missingCritical = scopedLocations.filter((l: any) => !String(l?.phone || '').trim() || !String(l?.website || '').trim()).length
+
+    return {
+      impressions,
+      websiteClicks,
+      calls,
+      directions,
+      avgRating,
+      responseRate,
+      topKeyword,
+      missingCritical,
+      scopeLabel:
+        insightsScope === 'selected' && selectedLocations.length
+          ? `${selectedLocations.length} selected`
+          : insightsScope === 'all'
+            ? 'All locations'
+            : insightsScope.replace('_', ' '),
+    }
+  }, [scopedInsights, scopedKeywords, scopedLocations, scopedReviews, insightsScope, selectedLocations])
+
+  const keywordMovers = useMemo(() => {
+    const months = Array.from(
+      new Set(searchKeywordsMonthly.map((r: any) => String(r?.month || '')).filter(Boolean))
+    ).sort()
+    const latest = months[months.length - 1]
+    const prev = months[months.length - 2]
+    if (!latest || !prev) return { latest, prev, up: [], down: [] }
+
+    const sumByMonth: Record<string, Record<string, number>> = {
+      [latest]: {},
+      [prev]: {},
+    }
+    for (const r of searchKeywordsMonthly) {
+      const m = String(r?.month || '')
+      const k = String(r?.keyword || '').trim()
+      if (!k || (m !== latest && m !== prev)) continue
+      sumByMonth[m][k] = (sumByMonth[m][k] || 0) + Number(r?.impressions || 0)
+    }
+    const allKeywords = new Set([...Object.keys(sumByMonth[latest]), ...Object.keys(sumByMonth[prev])])
+    const rows = Array.from(allKeywords).map((k) => {
+      const cur = sumByMonth[latest][k] || 0
+      const prevVal = sumByMonth[prev][k] || 0
+      const delta = cur - prevVal
+      const pct = prevVal ? Math.round((delta / prevVal) * 1000) / 10 : null
+      return { keyword: k, current: cur, previous: prevVal, delta, pct }
+    })
+    const up = rows.filter((r) => r.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 5)
+    const down = rows.filter((r) => r.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 5)
+    return { latest, prev, up, down }
+  }, [searchKeywordsMonthly])
+
+  const performanceDelta = useMemo(() => {
+    const cur = insightsPayload?.performance?.current_30d || {}
+    const prev = insightsPayload?.performance?.previous_30d || {}
+    const mk = (key: string) => {
+      const curVal = Number(cur[key] || 0)
+      const prevVal = Number(prev[key] || 0)
+      const delta = curVal - prevVal
+      const pct = prevVal ? Math.round((delta / prevVal) * 1000) / 10 : null
+      return { cur: curVal, prev: prevVal, delta, pct }
+    }
+    return {
+      impressions: mk('impressions'),
+      websiteClicks: mk('websiteClicks'),
+      calls: mk('calls'),
+      directions: mk('directions'),
+    }
+  }, [insightsPayload])
+
+  const qnaForView = useMemo(() => {
+    if (qnaView === 'all') return qnaItems
+    return qnaItems.filter((q) => String(q?.status || 'open') === qnaView)
+  }, [qnaItems, qnaView])
+
+  const postPublicationStats = useMemo(() => {
+    const map: Record<string, { ok: number; failed: number; lastStatus?: string; lastError?: string; lastAt?: number }> = {}
+    for (const p of postPublications) {
+      const key = p.post_id
+      if (!map[key]) map[key] = { ok: 0, failed: 0 }
+      if (p.status === 'published') map[key].ok += 1
+      if (p.status === 'failed') map[key].failed += 1
+      const ts = p.created_at ? new Date(p.created_at).getTime() : 0
+      if (!map[key].lastAt || ts > (map[key].lastAt || 0)) {
+        map[key].lastAt = ts
+        map[key].lastStatus = p.status
+        map[key].lastError = p.error_text || undefined
+      }
+    }
+    return map
+  }, [postPublications])
+
+  const insightsTotalsByLocationId = useMemo<Record<string, any>>(() => {
     const map: Record<string, any> = {}
     for (const p of insights) {
       const key = p.gmb_location_id
@@ -1588,8 +2152,192 @@ export default function GmbDashboardPage() {
         map[key].IMPRESSIONS += p.metric_value
       }
     }
-    return Object.values(map).sort((a: any, b: any) => b.IMPRESSIONS - a.IMPRESSIONS)
+    return map
   }, [insights])
+
+  const insightsByLocationTotals = useMemo<any[]>(
+    () => Object.values(insightsTotalsByLocationId).sort((a: any, b: any) => b.IMPRESSIONS - a.IMPRESSIONS),
+    [insightsTotalsByLocationId]
+  )
+
+  const totalLocationsForScore = useMemo(() => {
+    const n = Number(insightsPayload?.coverage?.total_locations || 0) || locations.length || 0
+    return Math.max(0, n)
+  }, [insightsPayload, locations.length])
+
+  const healthScore = useMemo(() => {
+    const total = totalLocationsForScore || 1
+    const missing = insightsPayload?.coverage?.missing || {}
+    const quality = insightsPayload?.quality || {}
+    const reviewsP = insightsPayload?.reviews || {}
+    const postsP = insightsPayload?.posts || {}
+    const mediaCov = insightsPayload?.media?.coverage || {}
+
+    const missingCritical = Number((missing.phone || 0) + (missing.website || 0))
+    const missingCriticalPct = Math.min(1, missingCritical / total)
+    const unverifiedPct = Math.min(1, Number(quality.unverified || 0) / total)
+    const unpublishedPct = Math.min(1, Number(quality.unpublished || 0) / total)
+    const responseRate = Math.max(0, Math.min(100, Number(reviewsP.response_rate || 0)))
+    const unrepliedPct = Math.max(0, Math.min(1, 1 - responseRate / 100))
+
+    const logoMissing = Math.max(0, total - Number(mediaCov.logo || 0))
+    const coverMissing = Math.max(0, total - Number(mediaCov.cover || 0))
+    const mediaMissingPct = Math.min(1, (logoMissing + coverMissing) / (Math.max(1, total) * 2))
+
+    const postingPenalty = Number(postsP.drafts || 0) > 0 ? 0.06 : 0
+
+    // Weighted score out of 100 (simple and explainable)
+    const score01 =
+      1 -
+      (missingCriticalPct * 0.34 +
+        unverifiedPct * 0.22 +
+        unpublishedPct * 0.12 +
+        unrepliedPct * 0.22 +
+        mediaMissingPct * 0.10 +
+        postingPenalty)
+
+    const score = Math.round(Math.max(0, Math.min(100, score01 * 100)))
+    const label = score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Needs work' : 'At risk'
+    return { score, label }
+  }, [insightsPayload, totalLocationsForScore])
+
+  const priorityTasks = useMemo(() => {
+    const total = totalLocationsForScore || locations.length || 0
+    const missing = insightsPayload?.coverage?.missing || {}
+    const quality = insightsPayload?.quality || {}
+    const demand = insightsPayload?.demand || {}
+    const reviewsP = insightsPayload?.reviews || {}
+    const postsP = insightsPayload?.posts || {}
+
+    const tasks: Array<{
+      id: string
+      title: string
+      detail?: string
+      badge?: string
+      source?: 'Google sync' | 'DataForSEO' | 'Estimated' | 'Astric workflow'
+      run?: () => void
+    }> = []
+
+    const unreplied = Number(reviewsP.unreplied || 0)
+    if (unreplied > 0) {
+      tasks.push({
+        id: 'reply_reviews',
+        title: `Reply to ${unreplied} review(s)`,
+        detail: 'Improve response rate and trust.',
+        badge: 'High',
+        source: 'Google sync',
+        run: () => {
+          setModuleTab('listing_management')
+          setActiveTab('reviews')
+          setReviewsSection('inbox')
+          setReviewsView('needs_reply')
+        },
+      })
+    }
+
+    const missingCritical = Number((missing.phone || 0) + (missing.website || 0))
+    if (missingCritical > 0) {
+      tasks.push({
+        id: 'fix_critical',
+        title: `Fix critical info on ${missingCritical} location(s)`,
+        detail: 'Phone/website missing can hurt calls and conversions.',
+        badge: 'High',
+        source: 'Google sync',
+        run: () => {
+          setModuleTab('listing_management')
+          setActiveTab('content_updates')
+          setContentUpdatesTab('dashboard')
+          setContentDashboardFocus((missing.phone || 0) ? 'phone' : 'website')
+          setBulkUpdateType((missing.phone || 0) ? 'phone' : 'website')
+          const fixNext = Array.isArray(quality.fix_next) ? quality.fix_next : []
+          const ids = fixNext
+            .filter((r: any) => Array.isArray(r?.missing_fields) && (r.missing_fields.includes('phone') || r.missing_fields.includes('website')))
+            .slice(0, 25)
+            .map((r: any) => String(r.id))
+          if (ids.length) setSelectedLocations(ids)
+        },
+      })
+    }
+
+    const unverified = Number(quality.unverified || 0)
+    if (unverified > 0) {
+      tasks.push({
+        id: 'unverified',
+        title: `${unverified} unverified location(s)`,
+        detail: 'Verification unlocks full visibility and management.',
+        badge: 'Medium',
+        source: 'Google sync',
+        run: () => {
+          setModuleTab('listing_management')
+          setActiveTab('listings')
+          setListingsView('unverified')
+        },
+      })
+    }
+
+    const unpublished = Number(quality.unpublished || 0)
+    if (unpublished > 0) {
+      tasks.push({
+        id: 'unpublished',
+        title: `${unpublished} unpublished/hidden location(s)`,
+        detail: 'Hidden listings won’t show in Maps/Search.',
+        badge: 'Medium',
+        source: 'Google sync',
+        run: () => {
+          setModuleTab('listing_management')
+          setActiveTab('listings')
+          setListingsView('unpublished')
+        },
+      })
+    }
+
+    const keywordGaps = Array.isArray(demand.keyword_gaps) ? demand.keyword_gaps.length : 0
+    if (keywordGaps > 0) {
+      tasks.push({
+        id: 'keyword_gaps',
+        title: `Sync search keywords for ${keywordGaps} location(s)`,
+        detail: 'Needed for keyword demand insights and movers.',
+        badge: 'Medium',
+        source: 'Google sync',
+        run: () => {
+          const ids = (demand.keyword_gaps || []).map((l: any) => String(l.id))
+          handleSyncKeywords(ids)
+        },
+      })
+    }
+
+    const drafts = Number(postsP.drafts || 0)
+    if (drafts > 0) {
+      tasks.push({
+        id: 'post_drafts',
+        title: `${drafts} draft post(s) waiting`,
+        detail: 'Posting improves activity and engagement.',
+        badge: 'Low',
+        source: 'Google sync',
+        run: () => {
+          setModuleTab('listing_management')
+          setActiveTab('post_scheduling')
+          setPostsView('drafts')
+        },
+      })
+    }
+
+    // If nothing stands out, suggest a refresh.
+    if (!tasks.length && total > 0) {
+      tasks.push({
+        id: 'refresh',
+        title: 'Refresh data from Google',
+        detail: 'Keep dashboard up to date.',
+        badge: 'Info',
+        source: 'Google sync',
+        run: () => handleSyncInsights(),
+      })
+    }
+
+    const weight: Record<string, number> = { High: 3, Medium: 2, Low: 1, Info: 0 }
+    tasks.sort((a, b) => (weight[b.badge || 'Info'] || 0) - (weight[a.badge || 'Info'] || 0))
+    return tasks.slice(0, 6)
+  }, [insightsPayload, locations.length, totalLocationsForScore])
 
   const insightsRecentByLocation = useMemo(() => {
     const map: Record<string, any[]> = {}
@@ -1972,6 +2720,7 @@ export default function GmbDashboardPage() {
         message: `Imported ${total} location(s).` + (errors ? `\n\nErrors:\n${errors}` : ''),
       })
       await loadGmbData(organizationId)
+      setLastSyncRunAt((p) => ({ ...p, locations: new Date().toISOString() }))
     } catch (e: any) {
       console.error('Sync error:', e)
       notify({ variant: 'error', title: 'Locations sync failed', message: await edgeErrorMessage(e) })
@@ -2011,6 +2760,7 @@ export default function GmbDashboardPage() {
               : ''),
       })
       await loadGmbData(organizationId)
+      setLastSyncRunAt((p) => ({ ...p, reviews: new Date().toISOString() }))
     } catch (e: any) {
       notify({ variant: 'error', title: 'Reviews sync failed', message: await edgeErrorMessage(e) })
     } finally {
@@ -2026,7 +2776,7 @@ export default function GmbDashboardPage() {
     setSyncingInsights(true)
     try {
       const { data, error } = await supabase.functions.invoke('gmb_sync_insights', {
-        body: { organization_id: organizationId, days: 30 },
+        body: { organization_id: organizationId, days: 60 },
       })
       if (error) throw error
       const points = data?.total_points_upserted ?? 0
@@ -2063,10 +2813,178 @@ export default function GmbDashboardPage() {
               : ''),
       })
       await loadGmbData(organizationId)
+      setLastSyncRunAt((p) => ({ ...p, insights: new Date().toISOString() }))
     } catch (e: any) {
       notify({ variant: 'error', title: 'Analytics sync failed', message: await edgeErrorMessage(e) })
     } finally {
       setSyncingInsights(false)
+    }
+  }
+
+  const handleSyncKeywords = async (locationIds?: string[]) => {
+    if (!organizationId) return
+    setSyncingKeywords(true)
+    try {
+      const body: any = { organization_id: organizationId, months: 6 }
+      const targetIds = locationIds && locationIds.length ? locationIds : selectedLocations
+      if (targetIds.length) {
+        body.location_ids = targetIds
+      }
+      const { data, error } = await supabase.functions.invoke('gmb_sync_search_keywords', { body })
+      if (error) throw error
+      const rows = data?.total_rows_upserted ?? 0
+      const scope = targetIds.length ? `${targetIds.length} location(s)` : 'all locations'
+      notify({
+        variant: 'success',
+        title: 'Keywords synced',
+        message: `Scope: ${scope}\nRows upserted: ${rows}`,
+      })
+      await loadGmbData(organizationId)
+      setLastSyncRunAt((p) => ({ ...p, keywords: new Date().toISOString() }))
+    } catch (e: any) {
+      notify({ variant: 'error', title: 'Keywords sync failed', message: await edgeErrorMessage(e) })
+    } finally {
+      setSyncingKeywords(false)
+    }
+  }
+
+  const handleSyncPosts = async () => {
+    if (!organizationId) return
+    setSyncingPosts(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('gmb_sync_posts', {
+        body: { organization_id: organizationId },
+      })
+      if (error) throw error
+      notify({
+        variant: 'success',
+        title: 'Posts synced',
+        message: `Upserted ${data?.upserted ?? 0} posts.`,
+      })
+      await loadGmbData(organizationId)
+      setLastSyncRunAt((p) => ({ ...p, posts: new Date().toISOString() }))
+    } catch (e: any) {
+      notify({ variant: 'error', title: 'Posts sync failed', message: await edgeErrorMessage(e) })
+    } finally {
+      setSyncingPosts(false)
+    }
+  }
+
+  const loadMorePosts = async () => {
+    if (!organizationId) return
+    if (!postsNextBefore) return
+    if (postsLoadingMore) return
+    setPostsLoadingMore(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('gmb_get_data', {
+        body: {
+          organization_id: organizationId,
+          only: 'posts',
+          posts_limit: POSTS_PAGE_SIZE,
+          posts_before: postsNextBefore,
+        },
+      })
+      if (error) throw error
+      const morePosts = Array.isArray(data?.posts) ? data.posts : []
+      const morePubs = Array.isArray(data?.post_publications) ? data.post_publications : []
+
+      setPosts((prev) => {
+        const seen = new Set(prev.map((p: any) => p.id))
+        const next = [...prev, ...morePosts.filter((p: any) => !seen.has(p.id))]
+        return next
+      })
+
+      if (morePubs.length) {
+        setPostPublications((prev) => {
+          const seen = new Set(prev.map((p: any) => p.id))
+          const next = [...prev, ...morePubs.filter((p: any) => !seen.has(p.id))]
+          return next
+        })
+      }
+
+      const nextBefore =
+        (typeof data?.next_posts_before === 'string' && data.next_posts_before) ||
+        (morePosts.length ? (morePosts[morePosts.length - 1] as any)?.created_at ?? null : null)
+      setPostsNextBefore(nextBefore)
+      setPostsHasMore(morePosts.length >= POSTS_PAGE_SIZE && !!nextBefore)
+    } catch (e: any) {
+      notify({ variant: 'error', title: 'Failed to load more posts', message: await edgeErrorMessage(e) })
+    } finally {
+      setPostsLoadingMore(false)
+    }
+  }
+
+  const verifyDbFreshness = async () => {
+    if (!organizationId) {
+      notify({ variant: 'error', title: 'Organization not found', message: 'Please re-login and try again.' })
+      return
+    }
+    setDbFreshnessLoading(true)
+    try {
+      const orgId = organizationId
+      const pickLatest = async (table: string, col: string) => {
+        const { data, error } = await supabase
+          .from(table as any)
+          .select(col)
+          .eq('organization_id', orgId)
+          .order(col as any, { ascending: false })
+          .limit(1)
+        if (error) throw error
+        const v = Array.isArray(data) && data.length ? (data[0] as any)?.[col] : null
+        return v
+      }
+
+      const [loc, rev, ins, kw, media, posts, lastInsightsRun, lastKeywordsRun] = await Promise.all([
+        pickLatest('gmb_locations', 'last_synced_at'),
+        pickLatest('gmb_reviews', 'review_date'),
+        pickLatest('gmb_insights', 'date'),
+        pickLatest('gmb_search_keywords_monthly', 'month'),
+        pickLatest('gmb_media_assets', 'created_at'),
+        pickLatest('gmb_posts', 'created_at'),
+        pickLatest('gmb_insights_fetches', 'fetched_at'),
+        (async () => {
+          const { data, error } = await supabase
+            .from('gmb_insights_fetches' as any)
+            .select('fetched_at,kind')
+            .eq('organization_id', orgId)
+            .eq('kind', 'search_keywords_monthly')
+            .order('fetched_at' as any, { ascending: false })
+            .limit(1)
+          if (error) throw error
+          return Array.isArray(data) && data.length ? (data[0] as any)?.fetched_at : null
+        })(),
+      ])
+
+      const snapshot = {
+        checked_at: new Date().toISOString(),
+        locations_last_synced_at: loc,
+        latest_review_date: rev,
+        latest_insight_date: ins,
+        latest_keyword_month: kw,
+        latest_media_asset_at: media,
+        latest_post_at: posts,
+        last_fetch_log_any: lastInsightsRun,
+        last_fetch_log_keywords: lastKeywordsRun,
+      }
+      setDbFreshness(snapshot)
+
+      notify({
+        variant: 'info',
+        title: 'DB freshness check',
+        message:
+          `Locations: ${fmtDate(snapshot.locations_last_synced_at)}\n` +
+          `Reviews: ${fmtDate(snapshot.latest_review_date)}\n` +
+          `Insights: ${fmtDate(snapshot.latest_insight_date)}\n` +
+          `Keywords: ${snapshot.latest_keyword_month || '—'}\n` +
+          `Media: ${fmtDate(snapshot.latest_media_asset_at)}\n` +
+          `Posts: ${fmtDate(snapshot.latest_post_at)}\n\n` +
+          `Fetch log (any): ${fmtDate(snapshot.last_fetch_log_any)}\n` +
+          `Fetch log (keywords): ${fmtDate(snapshot.last_fetch_log_keywords)}`,
+      })
+    } catch (e: any) {
+      notify({ variant: 'error', title: 'DB freshness check failed', message: e?.message || String(e) })
+    } finally {
+      setDbFreshnessLoading(false)
     }
   }
 
@@ -2218,11 +3136,52 @@ export default function GmbDashboardPage() {
     setMediaSyncing(true)
     try {
       const { data, error } = await supabase.functions.invoke('gmb_sync_media', {
-        body: { organization_id: organizationId, gmb_location_id: mediaViewerLocationId },
+        body: {
+          organization_id: organizationId,
+          gmb_location_id: mediaViewerLocationId,
+          download: true,
+          max_download_per_location: 5,
+          download_limits: { logo: 1, cover: 1, profile: 1, additional: 2 },
+        },
       })
       if (error) throw error
       await loadMediaAssets(organizationId, mediaViewerLocationId)
-      notify({ variant: 'success', title: 'Media synced', message: `Total: ${data?.total ?? 0}` })
+      notify({
+        variant: 'success',
+        title: 'Media synced',
+        message: `Upserted: ${data?.upserted ?? 0} • Downloaded: ${data?.downloaded ?? 0}`,
+      })
+      setLastSyncRunAt((p) => ({ ...p, media: new Date().toISOString() }))
+    } catch (e: any) {
+      notify({ variant: 'error', title: 'Media sync failed', message: await edgeErrorMessage(e) })
+    } finally {
+      setMediaSyncing(false)
+    }
+  }
+
+  const handleSyncMediaAll = async () => {
+    if (!organizationId) return
+    setMediaSyncing(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('gmb_sync_media', {
+        body: {
+          organization_id: organizationId,
+          download: true,
+          max_download_per_location: 2,
+          download_limits: { logo: 1, cover: 1, profile: 1, additional: 0 },
+        },
+      })
+      if (error) throw error
+      // Refresh current viewer if open
+      if (mediaViewerLocationId) {
+        await loadMediaAssets(organizationId, mediaViewerLocationId)
+      }
+      notify({
+        variant: 'success',
+        title: 'Media sync started',
+        message: `Upserted: ${data?.upserted ?? 0} • Downloaded: ${data?.downloaded ?? 0}`,
+      })
+      setLastSyncRunAt((p) => ({ ...p, media: new Date().toISOString() }))
     } catch (e: any) {
       notify({ variant: 'error', title: 'Media sync failed', message: await edgeErrorMessage(e) })
     } finally {
@@ -2330,6 +3289,52 @@ export default function GmbDashboardPage() {
       notify({ variant: 'error', title: 'Failed to create post', message: await edgeErrorMessage(e) })
     } finally {
       setPosting(false)
+    }
+  }
+
+  const applyPostTemplate = (tpl: GmbPostTemplate) => {
+    setPostForm((p) => ({
+      ...p,
+      title: tpl.title || '',
+      content: tpl.content || '',
+      callToAction: tpl.call_to_action || '',
+      actionUrl: tpl.action_url || '',
+      mediaUrls: Array.isArray(tpl.media_urls) ? tpl.media_urls.join('\n') : '',
+      postType: tpl.post_type || 'STANDARD',
+      scheduledAt: '',
+    }))
+  }
+
+  const handleSavePostTemplate = async () => {
+    if (!organizationId) return
+    if (!postTemplateForm.name.trim()) {
+      notify({ variant: 'info', title: 'Template name is required' })
+      return
+    }
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      const media = postForm.mediaUrls
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const { error } = await supabase.from('gmb_post_templates').insert({
+        organization_id: organizationId,
+        name: postTemplateForm.name.trim(),
+        title: postForm.title || null,
+        content: postForm.content,
+        call_to_action: postForm.callToAction || null,
+        action_url: postForm.actionUrl || null,
+        media_urls: media.length ? media : null,
+        post_type: postForm.postType || 'STANDARD',
+        created_by: user.id,
+      })
+      if (error) throw error
+      notify({ variant: 'success', title: 'Template saved' })
+      setPostTemplateForm({ name: '' })
+      await loadGmbData(organizationId)
+    } catch (e: any) {
+      notify({ variant: 'error', title: 'Template save failed', message: await edgeErrorMessage(e) })
     }
   }
 
@@ -2543,6 +3548,33 @@ export default function GmbDashboardPage() {
     return v.toLocaleString()
   }
 
+  const fmtDate = (v: any) => {
+    if (!v) return '—'
+    const d = new Date(v)
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString()
+  }
+
+  const verificationReason = (location: any) => {
+    const v = location?.raw_location_full?.verifications || null
+    if (!v) return null
+    const hasAuthority =
+      typeof v?.hasBusinessAuthority === 'boolean'
+        ? v.hasBusinessAuthority
+        : typeof v?.has_business_authority === 'boolean'
+          ? v.has_business_authority
+          : null
+    const hasPending =
+      typeof v?.verify?.hasPendingVerification === 'boolean'
+        ? v.verify.hasPendingVerification
+        : typeof v?.verify?.has_pending_verification === 'boolean'
+          ? v.verify.has_pending_verification
+          : null
+
+    if (hasAuthority === false) return { label: 'No authority', variant: 'danger' as const }
+    if (hasPending === true) return { label: 'Pending verification', variant: 'info' as const }
+    return { label: 'Needs verification', variant: 'neutral' as const }
+  }
+
   const reviewResponseRate = useMemo(() => {
     const total = reviewsBi.total || 0
     return total ? Math.round((reviewsBi.replied / total) * 1000) / 10 : 0
@@ -2557,6 +3589,9 @@ export default function GmbDashboardPage() {
     const missingCategory = countMissing((l) => !String(l?.category || '').trim())
     const missingAttributes = countMissing((l) => !l?.attributes || (Array.isArray(l.attributes) && l.attributes.length === 0))
     const missingHours = countMissing((l) => !l?.hours || (typeof l.hours === 'object' && Object.keys(l.hours || {}).length === 0))
+    const missingSpecialHours = countMissing((l) => !l?.special_hours || (typeof l.special_hours === 'object' && Object.keys(l.special_hours || {}).length === 0))
+    const missingServiceArea = countMissing((l) => !l?.service_area || (typeof l.service_area === 'object' && Object.keys(l.service_area || {}).length === 0))
+    const missingOpenInfo = countMissing((l) => !l?.open_info || (typeof l.open_info === 'object' && Object.keys(l.open_info || {}).length === 0))
     const missingPhotos = countMissing((l) => {
       const p = l?.photos
       if (!p) return true
@@ -2604,6 +3639,9 @@ export default function GmbDashboardPage() {
       missingAdditionalCategories,
       missingAttributes,
       missingHours,
+      missingSpecialHours,
+      missingServiceArea,
+      missingOpenInfo,
       missingPhotos,
       missingCover,
       missingLogo,
@@ -2672,24 +3710,33 @@ export default function GmbDashboardPage() {
 
     // AI Rank Tracker
     if (activeTab === 'keyword_position') {
-      const latestRanks = rankKeywords
+      const scoped = (() => {
+        if (rankLocationFilter === 'all') return rankKeywords
+        return rankKeywords.filter((k: any) => {
+          const lid = String(k?.gmb_location_id || '')
+          if (!lid) return !!rankIncludeGlobal
+          return lid === rankLocationFilter
+        })
+      })()
+
+      const latestRanks = scoped
         .map((k: any) => rankLatestByKeyword[k.id]?.rank_position)
         .filter((x: any) => x != null)
         .map((x: any) => Number(x))
         .filter((x: any) => Number.isFinite(x))
       const avgRank = latestRanks.length ? Math.round((latestRanks.reduce((a: number, b: number) => a + b, 0) / latestRanks.length) * 10) / 10 : null
-      const improved = rankKeywords.filter((k: any) => {
+      const improved = scoped.filter((k: any) => {
         const latest = rankLatestByKeyword[k.id]
         const prev = rankPrevByKeyword[k.id]
         return latest?.rank_position != null && prev?.rank_position != null && Number(latest.rank_position) < Number(prev.rank_position)
       }).length
-      const dropped = rankKeywords.filter((k: any) => {
+      const dropped = scoped.filter((k: any) => {
         const latest = rankLatestByKeyword[k.id]
         const prev = rankPrevByKeyword[k.id]
         return latest?.rank_position != null && prev?.rank_position != null && Number(latest.rank_position) > Number(prev.rank_position)
       }).length
       return [
-        { k: 'kw', label: 'Tracked keywords', value: fmt(rankKeywords.length), sub: 'Active' },
+        { k: 'kw', label: 'Tracked keywords', value: fmt(scoped.length), sub: rankLocationFilter === 'all' ? 'All' : 'This location' },
         { k: 'avg', label: 'Avg rank', value: avgRank != null ? fmt(avgRank) : '—', sub: 'Latest' },
         { k: 'up', label: 'Improved', value: fmt(improved), sub: 'Vs previous' },
         { k: 'down', label: 'Dropped', value: fmt(dropped), sub: 'Vs previous' },
@@ -2857,6 +3904,9 @@ export default function GmbDashboardPage() {
       website: pct(contentDashboardCounts.missingWebsite),
       description: pct(contentDashboardCounts.missingDescription),
       hours: pct(contentDashboardCounts.missingHours),
+      specialHours: pct(contentDashboardCounts.missingSpecialHours),
+      serviceArea: pct(contentDashboardCounts.missingServiceArea),
+      openInfo: pct(contentDashboardCounts.missingOpenInfo),
       attributes: pct(contentDashboardCounts.missingAttributes),
       photos: pct(contentDashboardCounts.missingPhotos),
       logo: pct(contentDashboardCounts.missingLogo),
@@ -2882,11 +3932,11 @@ export default function GmbDashboardPage() {
     const totalIntent = website + calls + directions
     const estimatedLeads = Math.max(0, Math.round(totalIntent * 0.08))
     const estimatedRevenue = Math.max(0, Math.round(estimatedLeads * 1200))
-    setRevenueEstimate({ estimatedRevenue, estimatedLeads, windowLabel: 'Past 30 days' })
+    setRevenueEstimate({ estimatedRevenue, estimatedLeads, windowLabel: 'Past 60 days' })
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(1200px_500px_at_20%_0%,rgba(37,99,235,0.10),transparent_60%),radial-gradient(900px_500px_at_80%_10%,rgba(16,185,129,0.08),transparent_55%)] bg-white p-6 md:p-8">
+    <div className="min-h-screen bg-[radial-gradient(1200px_500px_at_20%_0%,rgba(37,99,235,0.10),transparent_60%),radial-gradient(900px_500px_at_80%_10%,rgba(16,185,129,0.08),transparent_55%)] bg-white p-4 md:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Notice */}
         {notice ? (
@@ -2936,10 +3986,10 @@ export default function GmbDashboardPage() {
         <div className="-mx-2 px-2">
           <div className="rounded-2xl border bg-white/80 backdrop-blur p-3 shadow-sm">
             <div className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm font-semibold text-gray-900">GMB</div>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" onClick={openActions} className="gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Button size="sm" onClick={openActions} className="gap-2 w-full sm:w-auto">
                     <Command className="h-4 w-4" />
                     Actions
                     <span className="ml-1 rounded-md border bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-700">
@@ -2951,7 +4001,7 @@ export default function GmbDashboardPage() {
                     onClick={() => setAutoSyncEnabled((v) => !v)}
                     disabled={!organizationId}
                     className={
-                      'inline-flex items-center gap-2 rounded-lg border bg-white px-2.5 py-2 text-sm font-medium transition ' +
+                      'inline-flex w-full sm:w-auto items-center gap-2 rounded-lg border bg-white px-2.5 py-2 text-sm font-medium transition ' +
                       (!organizationId ? 'opacity-60 cursor-not-allowed' : 'hover:bg-gray-50')
                     }
                     title="Background sync from Google + realtime UI updates"
@@ -3076,6 +4126,54 @@ export default function GmbDashboardPage() {
               <div className="mt-1 text-xs text-gray-500">{c.sub}</div>
             </div>
           ))}
+        </div>
+
+        <div className="mt-4 rounded-2xl border bg-white p-4 space-y-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">Insights summary</div>
+              <div className="text-xs text-gray-500">Scope: {insightsSummary.scopeLabel}</div>
+            </div>
+            <Segmented
+              value={insightsScope}
+              onChange={setInsightsScope as any}
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'selected', label: `Selected (${selectedLocations.length})` },
+                { value: 'verified', label: 'Verified' },
+                { value: 'unverified', label: 'Unverified' },
+                { value: 'published', label: 'Published' },
+                { value: 'unpublished', label: 'Unpublished' },
+              ]}
+            />
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4 lg:grid-cols-8">
+            {[
+              { k: 'impr', label: 'Impressions', value: fmt(insightsSummary.impressions) },
+              { k: 'web', label: 'Website clicks', value: fmt(insightsSummary.websiteClicks) },
+              { k: 'calls', label: 'Calls', value: fmt(insightsSummary.calls) },
+              { k: 'dir', label: 'Directions', value: fmt(insightsSummary.directions) },
+              { k: 'rating', label: 'Avg rating', value: insightsSummary.avgRating ? `${insightsSummary.avgRating}★` : '—' },
+              { k: 'rr', label: 'Response rate', value: `${insightsSummary.responseRate}%` },
+              { k: 'kw', label: 'Top keyword', value: insightsSummary.topKeyword?.keyword || '—' },
+              { k: 'risk', label: 'At-risk locations', value: fmt(insightsSummary.missingCritical) },
+            ].map((c) => (
+              <div key={c.k} className="rounded-xl border bg-gray-50 p-3">
+                <div className="text-[11px] font-semibold text-gray-600">{c.label}</div>
+                <div className="mt-1 text-lg font-semibold text-gray-900">{c.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-2 text-[11px] text-gray-600">
+            <span className="rounded-full border px-2 py-1">Locations: {fmtDate(insightsPayload?.freshness?.locations)}</span>
+            <span className="rounded-full border px-2 py-1">Reviews: {fmtDate(insightsPayload?.freshness?.reviews)}</span>
+            <span className="rounded-full border px-2 py-1">Insights: {fmtDate(insightsPayload?.freshness?.insights)}</span>
+            <span className="rounded-full border px-2 py-1">Keywords: {insightsPayload?.freshness?.keywords || '—'}</span>
+            <span className="rounded-full border px-2 py-1">Media: {fmtDate(insightsPayload?.freshness?.media_assets)}</span>
+            <span className="rounded-full border px-2 py-1">Posts: {fmtDate(insightsPayload?.freshness?.posts)}</span>
+          </div>
         </div>
 
         {/* Command palette (Ctrl/Cmd+K) */}
@@ -3230,78 +4328,87 @@ export default function GmbDashboardPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                    <div className="relative w-full md:max-w-2xl">
-                      <Search className="h-4 w-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <Input
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search Business Name, City or Location"
-                        className="pl-9"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <select
-                        className="w-full md:w-56 p-2 border rounded-md"
-                        value={overviewQuickFilter}
-                        onChange={(e) => setOverviewQuickFilter(e.target.value as any)}
-                      >
-                        <option value="none">Filters</option>
-                        <option value="phone_missing">Phone Number Missing</option>
-                        <option value="website_missing">Website URL Missing</option>
-                        <option value="unverified">Unverified Listing</option>
-                        <option value="unpublished">Hidden/Unpublished</option>
-                        <option value="low_rating">Low Rating</option>
-                        <option value="low_completion">Low Completion Score</option>
-                        <option value="highest_reviews">Highest Reviews</option>
-                        <option value="lowest_reviews">Lowest Reviews</option>
-                      </select>
-                      {selectedLocations.length ? (
-                        <Button
-                          variant="outline"
-                          onClick={() => setLocationsHidden(selectedLocations, true)}
-                          disabled={!organizationId}
-                        >
-                          Hide Listings
-                        </Button>
-                      ) : null}
-                    </div>
-                  </div>
+                  {overviewSubtab === 'listings' ? (
+                    <>
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div className="relative w-full md:max-w-2xl">
+                          <Search className="h-4 w-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <Input
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search Business Name, City or Location"
+                            className="pl-9"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            className="w-full md:w-56 p-2 border rounded-md"
+                            value={overviewQuickFilter}
+                            onChange={(e) => setOverviewQuickFilter(e.target.value as any)}
+                          >
+                            <option value="none">Filters</option>
+                            <option value="phone_missing">Phone Number Missing</option>
+                            <option value="website_missing">Website URL Missing</option>
+                            <option value="unverified">Unverified Listing</option>
+                            <option value="unpublished">Hidden/Unpublished</option>
+                            <option value="low_rating">Low Rating</option>
+                            <option value="low_completion">Low Completion Score</option>
+                            <option value="highest_reviews">Highest Reviews</option>
+                            <option value="lowest_reviews">Lowest Reviews</option>
+                          </select>
+                          {selectedLocations.length ? (
+                            <Button
+                              variant="outline"
+                              onClick={() => setLocationsHidden(selectedLocations, true)}
+                              disabled={!organizationId}
+                            >
+                              Hide Listings
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
 
-                  {/* Top filter pills */}
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { k: 'phone_missing', label: 'Phone Number Missing' },
-                      { k: 'website_missing', label: 'Website URL Missing' },
-                      { k: 'unverified', label: 'Unverified Listing' },
-                      { k: 'low_completion', label: 'Low Completion Score' },
-                      { k: 'highest_reviews', label: 'Highest Reviews' },
-                      { k: 'lowest_reviews', label: 'Lowest Reviews' },
-                    ].map((f: any) => (
-                      <button
-                        key={f.k}
-                        type="button"
-                        onClick={() => setOverviewQuickFilter((p: any) => (p === f.k ? 'none' : f.k))}
-                        className={
-                          'rounded-full border px-3 py-1 text-sm transition ' +
-                          (overviewQuickFilter === f.k ? 'bg-gray-900 text-white border-gray-900' : 'bg-white hover:bg-gray-50')
-                        }
-                      >
-                        {f.label}
-                      </button>
-                    ))}
-                    {overviewQuickFilter !== 'none' ? (
-                      <Button size="sm" variant="ghost" onClick={() => setOverviewQuickFilter('none')}>
-                        Clear
-                      </Button>
-                    ) : null}
-                  </div>
+                      {/* Top filter pills */}
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { k: 'phone_missing', label: 'Phone Number Missing' },
+                          { k: 'website_missing', label: 'Website URL Missing' },
+                          { k: 'unverified', label: 'Unverified Listing' },
+                          { k: 'low_completion', label: 'Low Completion Score' },
+                          { k: 'highest_reviews', label: 'Highest Reviews' },
+                          { k: 'lowest_reviews', label: 'Lowest Reviews' },
+                        ].map((f: any) => (
+                          <button
+                            key={f.k}
+                            type="button"
+                            onClick={() => setOverviewQuickFilter((p: any) => (p === f.k ? 'none' : f.k))}
+                            className={
+                              'rounded-full border px-3 py-1 text-sm transition ' +
+                              (overviewQuickFilter === f.k ? 'bg-gray-900 text-white border-gray-900' : 'bg-white hover:bg-gray-50')
+                            }
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                        {overviewQuickFilter !== 'none' ? (
+                          <Button size="sm" variant="ghost" onClick={() => setOverviewQuickFilter('none')}>
+                            Clear
+                          </Button>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-xl border bg-white p-3 text-sm text-gray-700">
+                      Command Center highlights what to do next across Listings, Reviews, Performance, Posts, and Keywords.
+                    </div>
+                  )}
 
                   <div className="pt-2">
                     <Segmented
                       value={overviewSubtab}
                       onChange={setOverviewSubtab as any}
                       options={[
+                        { value: 'command_center', label: 'Command Center' },
                         { value: 'listings', label: `Listings`, right: <Badge>{locations.length}</Badge> },
                         { value: 'performance', label: 'Performance Data' },
                         { value: 'detailed_comparison', label: 'Detailed Comparison' },
@@ -3313,16 +4420,316 @@ export default function GmbDashboardPage() {
               </CardHeader>
 
               <CardContent className="pt-0">
-                {overviewSubtab === 'listings' ? (
-                  <div className="overflow-hidden rounded-xl border bg-white">
-                    <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                      <div className="col-span-5 flex items-center gap-2">Name</div>
-                      <div className="col-span-2">Completion Score</div>
-                      <div className="col-span-2">Rating</div>
-                      <div className="col-span-2">Reviews</div>
-                      <div className="col-span-1 text-right">Added</div>
+                {overviewSubtab === 'command_center' ? (
+                  <div className="space-y-4">
+                    <div className="grid gap-4 lg:grid-cols-3">
+                      <Card className="rounded-2xl lg:col-span-1">
+                        <CardHeader className="pb-2">
+                          <CardDescription>Health score</CardDescription>
+                          <CardTitle className="text-3xl">{healthScore.score}</CardTitle>
+                        </CardHeader>
+                        <CardContent className="pt-0 space-y-3">
+                          <div className="text-sm text-gray-700">
+                            Status: <span className="font-semibold text-gray-900">{healthScore.label}</span>
+                          </div>
+                          <div className="rounded-xl border bg-white p-3 text-xs text-gray-600">
+                            Source: <span className="font-semibold text-gray-800">Google sync</span> (computed from your stored GBP data)
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-sm">
+                            <Button
+                              variant="outline"
+                              onClick={() => {
+                                setModuleTab('listing_management')
+                                setActiveTab('content_updates')
+                              }}
+                              disabled={locations.length === 0}
+                            >
+                              Fix content
+                            </Button>
+                            <Button
+                              variant="outline"
+                              onClick={() => {
+                                setModuleTab('listing_management')
+                                setActiveTab('reviews')
+                              }}
+                              disabled={reviews.length === 0}
+                            >
+                              Reply reviews
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="rounded-2xl lg:col-span-2">
+                        <CardHeader className="pb-2">
+                          <CardDescription>Today’s priorities</CardDescription>
+                          <CardTitle className="text-xl">Do these next</CardTitle>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                          {priorityTasks.length === 0 ? (
+                            <div className="text-sm text-gray-600">No priorities yet.</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {priorityTasks.map((t) => (
+                                <div key={t.id} className="rounded-xl border bg-white p-3">
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        {t.badge === 'High' ? (
+                                          <Badge variant="danger">High</Badge>
+                                        ) : t.badge === 'Medium' ? (
+                                          <Badge variant="info">Medium</Badge>
+                                        ) : t.badge === 'Low' ? (
+                                          <Badge variant="neutral">Low</Badge>
+                                        ) : (
+                                          <Badge>Info</Badge>
+                                        )}
+                                        <div className="font-semibold text-gray-900 truncate">{t.title}</div>
+                                      </div>
+                                      {t.detail ? <div className="mt-1 text-xs text-gray-500">{t.detail}</div> : null}
+                                      {t.source ? (
+                                        <div className="mt-1 text-[11px] text-gray-400">Source: {t.source}</div>
+                                      ) : null}
+                                    </div>
+                                    {t.run ? (
+                                      <Button size="sm" className="w-full sm:w-auto" onClick={t.run}>
+                                        Open
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
                     </div>
-                    <div className="divide-y">
+
+                    <div className="grid gap-4 lg:grid-cols-3">
+                      <Card className="rounded-2xl lg:col-span-2">
+                        <CardHeader className="pb-2">
+                          <CardDescription>Location workspace</CardDescription>
+                          <CardTitle className="text-xl">Work on one location</CardTitle>
+                        </CardHeader>
+                        <CardContent className="pt-0 space-y-3">
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <div className="md:col-span-2">
+                              <Label>Select location</Label>
+                              <select
+                                className="w-full mt-2 p-2 border rounded-md"
+                                value={workspaceLocationId || ''}
+                                onChange={(e) => setWorkspaceLocationId(e.target.value || null)}
+                              >
+                                <option value="">Choose…</option>
+                                {locations.slice().sort((a, b) => String(a.location_name).localeCompare(String(b.location_name))).map((l) => (
+                                  <option key={l.id} value={l.id}>
+                                    {l.location_name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex items-end">
+                              <Button
+                                className="w-full"
+                                variant="outline"
+                                onClick={() => {
+                                  if (!workspaceLocationId) return
+                                  setSelectedLocations([workspaceLocationId])
+                                  notify({ variant: 'success', title: 'Selection updated', message: '1 location selected for bulk actions.' })
+                                }}
+                                disabled={!workspaceLocationId}
+                              >
+                                Set as selection
+                              </Button>
+                            </div>
+                          </div>
+
+                          {workspaceLocationId ? (() => {
+                            const loc = locationById[workspaceLocationId]
+                            const meta = locationMetaById[workspaceLocationId]
+                            const perf = insightsTotalsByLocationId[workspaceLocationId]
+                            const rev = reviewAggByLocation[workspaceLocationId]
+                            const cityState = [meta?.city, meta?.state].filter(Boolean).join(', ') || '—'
+                            const addrLine = meta?.line || loc?.address?.formattedAddress || '—'
+                            return (
+                              <div className="rounded-xl border bg-gray-50 p-4">
+                                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-semibold text-gray-900 truncate">{loc?.location_name || '—'}</div>
+                                    <div className="mt-1 text-xs text-gray-500 truncate">{addrLine}</div>
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                                      <span className="rounded-full bg-white border px-2 py-0.5 text-gray-700">{cityState}</span>
+                                      {loc?.is_verified ? <Badge variant="success">Verified</Badge> : <Badge variant="neutral">Unverified</Badge>}
+                                      {loc?.is_published ? <Badge variant="info">Published</Badge> : <Badge>Unpublished</Badge>}
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="w-full sm:w-auto"
+                                      onClick={() => {
+                                        setModuleTab('listing_management')
+                                        setActiveTab('reviews')
+                                        setReviewsSection('inbox')
+                                        setReviewLocationId(workspaceLocationId as any)
+                                      }}
+                                    >
+                                      Reviews
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="w-full sm:w-auto"
+                                      onClick={() => {
+                                        setModuleTab('listing_management')
+                                        setActiveTab('content_updates')
+                                        setContentUpdatesTab('dashboard')
+                                      }}
+                                    >
+                                      Content updates
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="w-full sm:w-auto"
+                                      onClick={() => {
+                                        setModuleTab('listing_management')
+                                        setActiveTab('listings')
+                                        setSearchQuery(String(loc?.location_name || ''))
+                                      }}
+                                    >
+                                      Open listing
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                <div className="mt-4 grid gap-3 md:grid-cols-4">
+                                  <div className="rounded-lg border bg-white p-3">
+                                    <div className="text-[11px] text-gray-500">Impressions</div>
+                                    <div className="mt-1 font-semibold text-gray-900">{fmt(perf?.IMPRESSIONS ?? 0)}</div>
+                                    <div className="mt-1 text-[11px] text-gray-400">Source: Google sync</div>
+                                  </div>
+                                  <div className="rounded-lg border bg-white p-3">
+                                    <div className="text-[11px] text-gray-500">Website clicks</div>
+                                    <div className="mt-1 font-semibold text-gray-900">{fmt(perf?.WEBSITE_CLICKS ?? 0)}</div>
+                                    <div className="mt-1 text-[11px] text-gray-400">Source: Google sync</div>
+                                  </div>
+                                  <div className="rounded-lg border bg-white p-3">
+                                    <div className="text-[11px] text-gray-500">Calls</div>
+                                    <div className="mt-1 font-semibold text-gray-900">{fmt(perf?.CALL_CLICKS ?? 0)}</div>
+                                    <div className="mt-1 text-[11px] text-gray-400">Source: Google sync</div>
+                                  </div>
+                                  <div className="rounded-lg border bg-white p-3">
+                                    <div className="text-[11px] text-gray-500">Avg rating</div>
+                                    <div className="mt-1 font-semibold text-gray-900">{rev?.avg ? `${rev.avg.toFixed(2)}★` : '—'}</div>
+                                    <div className="mt-1 text-[11px] text-gray-400">Source: Google sync</div>
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })() : (
+                            <div className="text-sm text-gray-600">Select a location to see its workspace.</div>
+                          )}
+                        </CardContent>
+                      </Card>
+
+                      <Card className="rounded-2xl lg:col-span-1">
+                        <CardHeader className="pb-2">
+                          <CardDescription>Freshness</CardDescription>
+                          <CardTitle className="text-xl">Last sync</CardTitle>
+                        </CardHeader>
+                        <CardContent className="pt-0 space-y-3 text-sm text-gray-700">
+                          <div className="flex items-center justify-between">
+                            <span>Locations</span>
+                            <span className="text-gray-500">
+                              {fmtDate(insightsPayload?.freshness?.locations)}
+                              {lastSyncRunAt.locations ? (
+                                <span className="ml-2 text-[11px] text-gray-400">(ran {fmtDate(lastSyncRunAt.locations)})</span>
+                              ) : null}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span>Reviews</span>
+                            <span className="text-gray-500">
+                              {fmtDate(insightsPayload?.freshness?.reviews)}
+                              {lastSyncRunAt.reviews ? (
+                                <span className="ml-2 text-[11px] text-gray-400">(ran {fmtDate(lastSyncRunAt.reviews)})</span>
+                              ) : null}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span>Insights</span>
+                            <span className="text-gray-500">
+                              {fmtDate(insightsPayload?.freshness?.insights)}
+                              {lastSyncRunAt.insights ? (
+                                <span className="ml-2 text-[11px] text-gray-400">(ran {fmtDate(lastSyncRunAt.insights)})</span>
+                              ) : null}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span>Keywords</span>
+                            <span className="text-gray-500">
+                              {insightsPayload?.freshness?.keywords || '—'}
+                              {lastSyncRunAt.keywords ? (
+                                <span className="ml-2 text-[11px] text-gray-400">(ran {fmtDate(lastSyncRunAt.keywords)})</span>
+                              ) : null}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span>Media</span>
+                            <span className="text-gray-500">
+                              {fmtDate(insightsPayload?.freshness?.media_assets)}
+                              {lastSyncRunAt.media ? (
+                                <span className="ml-2 text-[11px] text-gray-400">(ran {fmtDate(lastSyncRunAt.media)})</span>
+                              ) : null}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span>Posts</span>
+                            <span className="text-gray-500">
+                              {fmtDate(insightsPayload?.freshness?.posts)}
+                              {lastSyncRunAt.posts ? (
+                                <span className="ml-2 text-[11px] text-gray-400">(ran {fmtDate(lastSyncRunAt.posts)})</span>
+                              ) : null}
+                            </span>
+                          </div>
+                          <div className="pt-2 flex flex-col gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => organizationId && loadGmbData(organizationId)}
+                              disabled={!organizationId}
+                            >
+                              Refresh view
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={verifyDbFreshness} disabled={dbFreshnessLoading || !organizationId}>
+                              {dbFreshnessLoading ? 'Checking…' : 'Verify DB (latest timestamps)'}
+                            </Button>
+                          </div>
+                          {dbFreshness ? (
+                            <details className="rounded-xl border bg-white p-3">
+                              <summary className="cursor-pointer text-sm font-semibold text-gray-800">DB snapshot (debug)</summary>
+                              <pre className="mt-2 text-xs bg-gray-50 border rounded-lg p-3 overflow-auto max-h-[240px] whitespace-pre-wrap">
+{JSON.stringify(dbFreshness, null, 2)}
+                              </pre>
+                            </details>
+                          ) : null}
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </div>
+                ) : overviewSubtab === 'listings' ? (
+                  <div className="overflow-x-auto rounded-xl border bg-white">
+                    <div className="min-w-[960px]">
+                      <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                        <div className="col-span-5 flex items-center gap-2">Name</div>
+                        <div className="col-span-2">Completion Score</div>
+                        <div className="col-span-2">Rating</div>
+                        <div className="col-span-2">Reviews</div>
+                        <div className="col-span-1 text-right">Added</div>
+                      </div>
+                      <div className="divide-y">
                       {overviewLocations.slice(0, 50).map((row: any) => {
                         const l = row.l
                         const lid = String(l.id)
@@ -3416,6 +4823,7 @@ export default function GmbDashboardPage() {
                           </div>
                         )
                       })}
+                      </div>
                     </div>
                   </div>
                 ) : overviewSubtab === 'performance' ? (
@@ -3701,14 +5109,15 @@ export default function GmbDashboardPage() {
                           </ResponsiveContainer>
                         </div>
 
-                        <div className="overflow-hidden rounded-xl border bg-white">
-                          <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                            <div className="col-span-6">Keywords</div>
-                            <div className="col-span-2">Rank</div>
-                            <div className="col-span-2">Change</div>
-                            <div className="col-span-2">Listings</div>
-                          </div>
-                          <div className="divide-y">
+                        <div className="overflow-x-auto rounded-xl border bg-white">
+                          <div className="min-w-[720px]">
+                            <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                              <div className="col-span-6">Keywords</div>
+                              <div className="col-span-2">Rank</div>
+                              <div className="col-span-2">Change</div>
+                              <div className="col-span-2">Listings</div>
+                            </div>
+                            <div className="divide-y">
                             {rankKeywords.slice(0, 12).map((k: any) => {
                               const latest = rankLatestByKeyword[k.id]
                               const prev = rankPrevByKeyword[k.id]
@@ -3737,6 +5146,7 @@ export default function GmbDashboardPage() {
                                 </div>
                               )
                             })}
+                            </div>
                           </div>
                         </div>
                       </CardContent>
@@ -3797,7 +5207,7 @@ export default function GmbDashboardPage() {
               </CardContent>
             </Card>
 
-            {overviewSubtab === 'listings' ? (
+            {overviewSubtab === 'command_center' ? null : overviewSubtab === 'listings' ? (
               <>
                 {/* Overview: top cards */}
                 <div className="grid gap-4 lg:grid-cols-3">
@@ -4045,6 +5455,9 @@ export default function GmbDashboardPage() {
                     { k: 'website', label: 'Website URLs', v: completionBreakdown.website },
                     { k: 'description', label: 'Description', v: completionBreakdown.description },
                     { k: 'hours', label: 'Opening Hours', v: completionBreakdown.hours },
+                    { k: 'special_hours', label: 'Special Hours', v: completionBreakdown.specialHours },
+                    { k: 'service_area', label: 'Service Area', v: completionBreakdown.serviceArea },
+                    { k: 'open_info', label: 'Open Info', v: completionBreakdown.openInfo },
                     { k: 'attributes', label: 'Attributes', v: completionBreakdown.attributes },
                     { k: 'photos', label: 'Photos', v: completionBreakdown.photos },
                     { k: 'logo', label: 'Logo', v: completionBreakdown.logo },
@@ -4183,7 +5596,7 @@ export default function GmbDashboardPage() {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Search locations…"
-                      className="pl-9 w-64"
+                    className="pl-9 w-full sm:w-64"
                     />
                   </div>
                   <Button variant="outline" onClick={() => setViewMode('grid')} disabled={viewMode === 'grid'}>
@@ -4215,6 +5628,40 @@ export default function GmbDashboardPage() {
                 <div className="rounded-xl border bg-white p-4">
                   <div className="text-sm font-semibold text-gray-900">Hidden</div>
                   <div className="mt-1 text-2xl font-semibold text-gray-900">{listingQuality.hidden}</div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3 mb-4">
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Missing special hours</div>
+                  <div className="mt-1 text-xl font-semibold text-gray-900">{contentDashboardCounts.missingSpecialHours}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Missing service area</div>
+                  <div className="mt-1 text-xl font-semibold text-gray-900">{contentDashboardCounts.missingServiceArea}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Missing open info</div>
+                  <div className="mt-1 text-xl font-semibold text-gray-900">{contentDashboardCounts.missingOpenInfo}</div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-white p-4 mb-4">
+                <div className="text-sm font-semibold text-gray-900">Fix next (lowest completeness)</div>
+                <div className="mt-3 space-y-2">
+                  {(insightsPayload?.quality?.fix_next || []).length ? (
+                    insightsPayload.quality.fix_next.map((l: any) => (
+                      <div key={l.id} className="flex items-start justify-between gap-3 rounded-lg border bg-gray-50 p-3">
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">{l.location_name || '—'}</div>
+                          <div className="text-xs text-gray-500">Missing: {Array.isArray(l.missing) ? l.missing.join(', ') : '—'}</div>
+                        </div>
+                        <Badge variant="info">{l.missing_count || 0} gaps</Badge>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-gray-600">No gaps detected.</div>
+                  )}
                 </div>
               </div>
 
@@ -4269,59 +5716,69 @@ export default function GmbDashboardPage() {
                   </div>
 
                   {viewMode === 'list' ? (
-                    <div className="overflow-hidden rounded-xl border">
-                      <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                        <div className="col-span-1"> </div>
-                        <div className="col-span-4">Location</div>
-                        <div className="col-span-3">Category</div>
-                        <div className="col-span-2">Status</div>
-                        <div className="col-span-2">Website</div>
-                      </div>
-                      <div className="divide-y">
-                        {filteredLocations.map((location: any) => {
-                          const addressLine = location.address?.addressLines?.[0] || location.address?.formattedAddress
-                          return (
-                            <div key={location.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
-                              <div className="col-span-1">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedLocations.includes(location.id)}
-                                  onChange={() => toggleLocationSelection(location.id)}
-                                />
+                    <div className="overflow-x-auto rounded-xl border">
+                      <div className="min-w-[760px]">
+                        <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                          <div className="col-span-1"> </div>
+                          <div className="col-span-4">Location</div>
+                          <div className="col-span-3">Category</div>
+                          <div className="col-span-2">Status</div>
+                          <div className="col-span-2">Website</div>
+                        </div>
+                        <div className="divide-y">
+                          {filteredLocations.map((location: any) => {
+                            const addressLine = location.address?.addressLines?.[0] || location.address?.formattedAddress
+                            return (
+                              <div key={location.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
+                                <div className="col-span-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedLocations.includes(location.id)}
+                                    onChange={() => toggleLocationSelection(location.id)}
+                                  />
+                                </div>
+                                <div className="col-span-4 min-w-0">
+                                  <div className="font-medium text-gray-900 truncate">{location.location_name}</div>
+                                  <div className="text-xs text-gray-500 truncate">{addressLine || '—'}</div>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {location.special_hours ? <Badge variant="info">Special hours</Badge> : null}
+                                    {location.service_area ? <Badge variant="neutral">Service area</Badge> : null}
+                                    {location.open_info ? <Badge variant="neutral">Open info</Badge> : null}
+                                  </div>
+                                </div>
+                                <div className="col-span-3 text-gray-700 truncate">{location.category || '—'}</div>
+                                <div className="col-span-2 flex flex-wrap gap-2">
+                                  {location.is_verified ? <Badge variant="success">Verified</Badge> : <Badge variant="neutral">Unverified</Badge>}
+                                  {location.is_published ? <Badge variant="info">Published</Badge> : <Badge>Unpublished</Badge>}
+                                  {!location.is_verified ? (() => {
+                                    const r = verificationReason(location)
+                                    return r ? <Badge variant={r.variant}>{r.label}</Badge> : null
+                                  })() : null}
+                                </div>
+                                <div className="col-span-2">
+                                  {location.website ? (
+                                    <a className="text-blue-600 hover:underline" href={location.website} target="_blank" rel="noreferrer">
+                                      Open
+                                    </a>
+                                  ) : (
+                                    <span className="text-gray-500">—</span>
+                                  )}
+                                </div>
                               </div>
-                              <div className="col-span-4">
-                                <div className="font-medium text-gray-900">{location.location_name}</div>
-                                <div className="text-xs text-gray-500">{addressLine || '—'}</div>
-                              </div>
-                              <div className="col-span-3 text-gray-700">{location.category || '—'}</div>
-                              <div className="col-span-2 flex flex-wrap gap-2">
-                                {location.is_verified && <Badge variant="success">Verified</Badge>}
-                                {location.is_published && <Badge variant="info">Published</Badge>}
-                                {!location.is_verified && !location.is_published && <Badge>—</Badge>}
-                              </div>
-                              <div className="col-span-2">
-                                {location.website ? (
-                                  <a className="text-blue-600 hover:underline" href={location.website} target="_blank" rel="noreferrer">
-                                    Open
-                                  </a>
-                                ) : (
-                                  <span className="text-gray-500">—</span>
-                                )}
-                              </div>
-                            </div>
-                          )
-                        })}
+                            )
+                          })}
+                        </div>
                       </div>
                     </div>
                   ) : (
                     <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                       {filteredLocations.map((location: any) => (
-                        <Card key={location.id}>
+                        <Card key={location.id} className="min-w-0">
                           <CardHeader className="space-y-2">
                             <div className="flex items-start justify-between gap-3">
-                              <CardTitle className="text-lg flex items-center gap-2">
+                              <CardTitle className="text-lg flex items-center gap-2 min-w-0">
                                 <MapPin className="h-4 w-4" />
-                                {location.location_name}
+                                <span className="line-clamp-2">{location.location_name}</span>
                               </CardTitle>
                               <input
                                 type="checkbox"
@@ -4340,6 +5797,11 @@ export default function GmbDashboardPage() {
                                   {location.phone}
                                 </p>
                               ) : null}
+                              <div className="flex flex-wrap gap-1">
+                                {location.special_hours ? <Badge variant="info">Special hours</Badge> : null}
+                                {location.service_area ? <Badge variant="neutral">Service area</Badge> : null}
+                                {location.open_info ? <Badge variant="neutral">Open info</Badge> : null}
+                              </div>
                               {location.website && (
                                 <a href={location.website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                                   <span className="inline-flex items-center gap-2">
@@ -4349,12 +5811,12 @@ export default function GmbDashboardPage() {
                                 </a>
                               )}
                               <div className="flex items-center gap-2 mt-4">
-                                {location.is_verified && (
-                                  <Badge variant="success">Verified</Badge>
-                                )}
-                                {location.is_published && (
-                                  <Badge variant="info">Published</Badge>
-                                )}
+                                {location.is_verified ? <Badge variant="success">Verified</Badge> : <Badge variant="neutral">Unverified</Badge>}
+                                {location.is_published ? <Badge variant="info">Published</Badge> : <Badge>Unpublished</Badge>}
+                                {!location.is_verified ? (() => {
+                                  const r = verificationReason(location)
+                                  return r ? <Badge variant={r.variant}>{r.label}</Badge> : null
+                                })() : null}
                               </div>
                             </div>
                           </CardContent>
@@ -4385,6 +5847,69 @@ export default function GmbDashboardPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Templates</div>
+                  <div className="mt-1 text-lg font-semibold text-gray-900">{insightsPayload?.posts?.templates ?? 0}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Publish success rate</div>
+                  <div className="mt-1 text-lg font-semibold text-gray-900">{insightsPayload?.posts?.publish_success_rate ?? 0}%</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Failures (last)</div>
+                  <div className="mt-1 text-lg font-semibold text-gray-900">{insightsPayload?.posts?.failure_reasons?.length ?? 0}</div>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Missing critical info</div>
+                  <div className="mt-1 text-xl font-semibold text-gray-900">
+                    {insightsPayload?.coverage?.missing?.phone + insightsPayload?.coverage?.missing?.website + insightsPayload?.coverage?.missing?.description || 0}
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500">Phone + Website + Description</div>
+                </div>
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Engagement (60d)</div>
+                  <div className="mt-1 text-xl font-semibold text-gray-900">
+                    {fmt((insightsPayload?.performance?.current_30d?.websiteClicks || 0) + (insightsPayload?.performance?.current_30d?.calls || 0))}
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500">Website clicks + calls</div>
+                </div>
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Photos missing</div>
+                  <div className="mt-1 text-xl font-semibold text-gray-900">{insightsPayload?.coverage?.missing?.photos ?? 0}</div>
+                  <div className="mt-1 text-xs text-gray-500">Locations without photos</div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Media coverage</div>
+                  <div className="mt-1 text-sm text-gray-700">
+                    Logo: <span className="font-medium text-gray-900">{insightsPayload?.media?.coverage?.logo ?? 0}</span> • Cover:{' '}
+                    <span className="font-medium text-gray-900">{insightsPayload?.media?.coverage?.cover ?? 0}</span>
+                  </div>
+                  <div className="mt-1 text-sm text-gray-700">
+                    Photos: <span className="font-medium text-gray-900">{insightsPayload?.media?.coverage?.photos ?? 0}</span> • Videos:{' '}
+                    <span className="font-medium text-gray-900">{insightsPayload?.media?.coverage?.videos ?? 0}</span>
+                  </div>
+                </div>
+                <div className="rounded-xl border bg-white p-4 md:col-span-2">
+                  <div className="text-xs text-gray-500">Q&A totals</div>
+                  <div className="mt-1 flex flex-wrap gap-2 text-sm text-gray-700">
+                    <span>Open: <span className="font-medium text-gray-900">{insightsPayload?.qna?.open ?? 0}</span></span>
+                    <span>Answered: <span className="font-medium text-gray-900">{insightsPayload?.qna?.answered ?? 0}</span></span>
+                    <span>Closed: <span className="font-medium text-gray-900">{insightsPayload?.qna?.closed ?? 0}</span></span>
+                  </div>
+                </div>
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Attributes</div>
+                  <div className="mt-1 text-sm text-gray-700">
+                    Completeness: <span className="font-medium text-gray-900">{completionBreakdown.attributes}%</span>
+                  </div>
+                </div>
+              </div>
               <Segmented
                 value={contentUpdatesTab}
                 onChange={setContentUpdatesTab as any}
@@ -4401,41 +5926,43 @@ export default function GmbDashboardPage() {
                   {bulkUpdates.length === 0 ? (
                     <div className="text-sm text-gray-600">No bulk update history yet.</div>
                   ) : (
-                    <div className="overflow-hidden rounded-xl border">
-                      <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                        <div className="col-span-3">Created</div>
-                        <div className="col-span-2">Type</div>
-                        <div className="col-span-2">Status</div>
-                        <div className="col-span-3">Result</div>
-                        <div className="col-span-2">Completed</div>
-                      </div>
-                      <div className="divide-y">
-                        {bulkUpdates.map((u) => (
-                          <div key={u.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
-                            <div className="col-span-3 text-gray-700">{new Date(u.created_at).toLocaleString()}</div>
-                            <div className="col-span-2 font-medium text-gray-900">{u.update_type}</div>
-                            <div className="col-span-2">
-                              <Badge
-                                variant={
-                                  u.status === 'completed'
-                                    ? 'success'
-                                    : u.status === 'failed'
-                                      ? 'danger'
-                                      : 'info'
-                                }
-                              >
-                                {u.status}
-                              </Badge>
+                    <div className="overflow-x-auto rounded-xl border">
+                      <div className="min-w-[720px]">
+                        <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                          <div className="col-span-3">Created</div>
+                          <div className="col-span-2">Type</div>
+                          <div className="col-span-2">Status</div>
+                          <div className="col-span-3">Result</div>
+                          <div className="col-span-2">Completed</div>
+                        </div>
+                        <div className="divide-y">
+                          {bulkUpdates.map((u) => (
+                            <div key={u.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
+                              <div className="col-span-3 text-gray-700">{new Date(u.created_at).toLocaleString()}</div>
+                              <div className="col-span-2 font-medium text-gray-900">{u.update_type}</div>
+                              <div className="col-span-2">
+                                <Badge
+                                  variant={
+                                    u.status === 'completed'
+                                      ? 'success'
+                                      : u.status === 'failed'
+                                        ? 'danger'
+                                        : 'info'
+                                  }
+                                >
+                                  {u.status}
+                                </Badge>
+                              </div>
+                              <div className="col-span-3 text-gray-700">
+                                {(u.successful_updates ?? 0)}/{u.total_locations ?? 0} ok
+                                {(u.failed_updates ?? 0) ? ` • ${(u.failed_updates ?? 0)} failed` : ''}
+                              </div>
+                              <div className="col-span-2 text-gray-500">
+                                {u.completed_at ? new Date(u.completed_at).toLocaleString() : '—'}
+                              </div>
                             </div>
-                            <div className="col-span-3 text-gray-700">
-                              {(u.successful_updates ?? 0)}/{u.total_locations ?? 0} ok
-                              {(u.failed_updates ?? 0) ? ` • ${(u.failed_updates ?? 0)} failed` : ''}
-                            </div>
-                            <div className="col-span-2 text-gray-500">
-                              {u.completed_at ? new Date(u.completed_at).toLocaleString() : '—'}
-                            </div>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -4591,9 +6118,9 @@ export default function GmbDashboardPage() {
               ) : null}
 
               {contentUpdatesTab === 'dashboard' ? (
-                <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
+                <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
                   {/* Left: Dashboard tiles */}
-                  <div className="space-y-4">
+                  <div className="space-y-4 min-w-0">
                     <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                       <div>
                         <div className="text-sm font-semibold text-gray-900">Content Dashboard</div>
@@ -4655,7 +6182,7 @@ export default function GmbDashboardPage() {
                   </div>
 
                   {/* Right: Management panel (sticky on desktop) */}
-                  <div className="space-y-4 lg:sticky lg:top-28 h-fit">
+                  <div className="space-y-4 min-w-0 lg:sticky lg:top-28 h-fit">
                     <div className="rounded-2xl border bg-white p-5 space-y-2">
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -4701,6 +6228,9 @@ export default function GmbDashboardPage() {
                           <div className="text-sm font-semibold text-gray-900">Media Manager</div>
                           <div className="text-xs text-gray-500">
                             Upload to Google Business Profile (COVER/LOGO/PROFILE). Videos support depends on API.
+                          </div>
+                          <div className="text-[11px] text-gray-400 mt-1">
+                            Auto-sync runs hourly. Auto downloads: logo/cover/profile only. Manual sync also pulls a few additional photos.
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -4844,6 +6374,17 @@ export default function GmbDashboardPage() {
                         </Button>
                       </div>
 
+                      <Segmented
+                        value={qnaView}
+                        onChange={setQnaView as any}
+                        options={[
+                          { value: 'open', label: 'Open', right: <Badge>{qnaItems.filter((q) => q.status === 'open').length}</Badge> },
+                          { value: 'answered', label: 'Answered', right: <Badge variant="success">{qnaItems.filter((q) => q.status === 'answered').length}</Badge> },
+                          { value: 'closed', label: 'Closed', right: <Badge>{qnaItems.filter((q) => q.status === 'closed').length}</Badge> },
+                          { value: 'all', label: 'All', right: <Badge>{qnaItems.length}</Badge> },
+                        ]}
+                      />
+
                       <div className="grid gap-4 lg:grid-cols-2">
                         <div className="rounded-xl border p-4">
                           <div className="font-semibold text-gray-900 mb-3">Capture question</div>
@@ -4881,11 +6422,11 @@ export default function GmbDashboardPage() {
 
                         <div className="rounded-xl border p-4">
                           <div className="font-semibold text-gray-900 mb-3">Questions</div>
-                          {qnaItems.length === 0 ? (
+                          {qnaForView.length === 0 ? (
                             <div className="text-sm text-gray-600">No questions yet.</div>
                           ) : (
                             <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                              {qnaItems.map((q) => (
+                              {qnaForView.map((q) => (
                                 <div key={q.id} className="rounded-xl border p-3">
                                   <div className="flex items-start justify-between gap-3">
                                     <div>
@@ -4909,6 +6450,9 @@ export default function GmbDashboardPage() {
                                     <div className="mt-2 flex gap-2">
                                       <Button size="sm" onClick={() => answerQnaRequest(q.id)} disabled={!String(qnaAnswerDrafts[q.id] || '').trim()}>
                                         Save answer
+                                      </Button>
+                                      <Button size="sm" variant="outline" onClick={() => closeQnaRequest(q.id)} disabled={q.status === 'closed'}>
+                                        Close
                                       </Button>
                                     </div>
                                   </div>
@@ -5131,14 +6675,15 @@ export default function GmbDashboardPage() {
                               <div className="text-xs text-gray-500">
                                 Set opening hours normally. We will generate the required Google payload automatically.
                               </div>
-                              <div className="overflow-hidden rounded-xl border">
-                                <div className="grid grid-cols-12 bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-600">
-                                  <div className="col-span-3">Day</div>
-                                  <div className="col-span-3">Closed</div>
-                                  <div className="col-span-3">Open</div>
-                                  <div className="col-span-3">Close</div>
-                                </div>
-                                <div className="divide-y">
+                              <div className="overflow-x-auto rounded-xl border">
+                                <div className="min-w-[520px]">
+                                  <div className="grid grid-cols-12 bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-600">
+                                    <div className="col-span-3">Day</div>
+                                    <div className="col-span-3">Closed</div>
+                                    <div className="col-span-3">Open</div>
+                                    <div className="col-span-3">Close</div>
+                                  </div>
+                                  <div className="divide-y">
                                   {bulkHours.map((d, idx) => (
                                     <div key={d.day} className="grid grid-cols-12 items-center gap-2 px-3 py-2">
                                       <div className="col-span-3 text-sm font-medium text-gray-900">{d.label}</div>
@@ -5182,6 +6727,7 @@ export default function GmbDashboardPage() {
                                       </div>
                                     </div>
                                   ))}
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -5309,6 +6855,24 @@ export default function GmbDashboardPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Response rate</div>
+                  <div className="mt-1 text-lg font-semibold text-gray-900">{insightsPayload?.reviews?.response_rate ?? 0}%</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Unreplied</div>
+                  <div className="mt-1 text-lg font-semibold text-gray-900">{insightsPayload?.reviews?.unreplied ?? 0}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Negative share</div>
+                  <div className="mt-1 text-lg font-semibold text-gray-900">{insightsPayload?.reviews?.negative_share ?? 0}%</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Locations needing replies</div>
+                  <div className="mt-1 text-lg font-semibold text-gray-900">{insightsPayload?.reviews?.locations_needing_replies?.length ?? 0}</div>
+                </div>
+              </div>
               <Segmented
                 value={reviewsSection}
                 onChange={setReviewsSection as any}
@@ -5653,10 +7217,11 @@ export default function GmbDashboardPage() {
                                 onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
                                 placeholder="Write a reply…"
                               />
-                              <div className="mt-2 flex flex-wrap gap-2">
+                              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                                 <Button
                                   variant="outline"
                                   size="sm"
+                                  className="w-full sm:w-auto"
                                   onClick={() =>
                                     setReplyDrafts((prev) => ({
                                       ...prev,
@@ -5668,6 +7233,7 @@ export default function GmbDashboardPage() {
                                 </Button>
                                 <Button
                                   size="sm"
+                                  className="w-full sm:w-auto"
                                   onClick={() => handleReplyReview(r.id)}
                                   disabled={!draft.trim() || !organizationId}
                                 >
@@ -5698,17 +7264,23 @@ export default function GmbDashboardPage() {
                   </CardTitle>
                   <CardDescription>Create drafts, schedule, and publish across locations.</CardDescription>
                 </div>
-                <Segmented
-                  value={postsView}
-                  onChange={setPostsView as any}
-                  options={[
-                    { value: 'create', label: 'Create' },
-                    { value: 'drafts', label: 'Drafts', right: <Badge>{posts.filter((p) => p.status === 'draft').length}</Badge> },
-                    { value: 'scheduled', label: 'Scheduled', right: <Badge>{posts.filter((p) => p.status === 'scheduled').length}</Badge> },
-                    { value: 'published', label: 'Published', right: <Badge variant="success">{posts.filter((p) => p.status === 'published').length}</Badge> },
-                    { value: 'failed', label: 'Failed', right: <Badge variant="danger">{posts.filter((p) => p.status === 'failed').length}</Badge> },
-                  ]}
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Segmented
+                    value={postsView}
+                    onChange={setPostsView as any}
+                    options={[
+                      { value: 'create', label: 'Create' },
+                      { value: 'drafts', label: 'Drafts', right: <Badge>{posts.filter((p) => p.status === 'draft').length}</Badge> },
+                      { value: 'scheduled', label: 'Scheduled', right: <Badge>{posts.filter((p) => p.status === 'scheduled').length}</Badge> },
+                      { value: 'published', label: 'Published', right: <Badge variant="success">{posts.filter((p) => p.status === 'published').length}</Badge> },
+                      { value: 'failed', label: 'Failed', right: <Badge variant="danger">{posts.filter((p) => p.status === 'failed').length}</Badge> },
+                    ]}
+                  />
+                  <Button variant="outline" size="sm" onClick={handleSyncPosts} disabled={syncingPosts || !organizationId}>
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    {syncingPosts ? 'Syncing…' : 'Sync posts'}
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -5717,6 +7289,39 @@ export default function GmbDashboardPage() {
                   <div className="rounded-xl border p-4">
                     <div className="font-semibold text-gray-900 mb-3">Create Post</div>
                     <div className="space-y-3">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div>
+                        <Label>Template</Label>
+                        <select
+                          className="w-full mt-2 p-2 border rounded-md"
+                          value={selectedPostTemplateId}
+                          onChange={(e) => {
+                            const id = e.target.value
+                            setSelectedPostTemplateId(id)
+                            const tpl = postTemplates.find((t) => t.id === id)
+                            if (tpl) applyPostTemplate(tpl)
+                          }}
+                        >
+                          <option value="">Select template</option>
+                          {postTemplates.map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <Label>Save as template</Label>
+                        <div className="flex gap-2 mt-2">
+                          <Input
+                            value={postTemplateForm.name}
+                            onChange={(e) => setPostTemplateForm({ name: e.target.value })}
+                            placeholder="Template name"
+                          />
+                          <Button variant="outline" onClick={handleSavePostTemplate}>
+                            Save
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
                     <div>
                       <Label>Title (optional)</Label>
                       <Input className="mt-2" value={postForm.title} onChange={(e) => setPostForm((p) => ({ ...p, title: e.target.value }))} />
@@ -5724,6 +7329,58 @@ export default function GmbDashboardPage() {
                     <div>
                       <Label>Content *</Label>
                       <Textarea className="mt-2" rows={4} value={postForm.content} onChange={(e) => setPostForm((p) => ({ ...p, content: e.target.value }))} />
+                    </div>
+                    <div className="rounded-xl border bg-gray-50 p-3">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="text-xs font-semibold text-gray-800">Variables (bulk post)</div>
+                          <div className="text-[11px] text-gray-500">
+                            Example: <span className="font-mono">{'{{location_name}}'}</span>, <span className="font-mono">{'{{city}}'}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="text-[11px] text-gray-500">Insert into</div>
+                          <select
+                            className="p-1.5 border rounded-md text-xs bg-white"
+                            value={postTokenTarget}
+                            onChange={(e) => setPostTokenTarget(e.target.value as any)}
+                          >
+                            <option value="content">Content</option>
+                            <option value="title">Title</option>
+                            <option value="actionUrl">CTA URL</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {postVariables.map((v) => (
+                          <Button key={v.key} type="button" size="sm" variant="outline" onClick={() => insertPostVariable(v.token)}>
+                            {v.label}
+                          </Button>
+                        ))}
+                      </div>
+                      {postPreviewLocation ? (
+                        <div className="mt-3 rounded-lg border bg-white p-3">
+                          <div className="text-[11px] font-semibold text-gray-600">
+                            Preview for: <span className="text-gray-900">{postPreviewLocation.location_name}</span>
+                          </div>
+                          <div className="mt-2 grid gap-2 text-xs">
+                            <div>
+                              <div className="text-[11px] text-gray-500">Title</div>
+                              <div className="text-gray-800">{renderPostTemplate(postForm.title, postPreviewVars) || '—'}</div>
+                            </div>
+                            <div>
+                              <div className="text-[11px] text-gray-500">Content</div>
+                              <div className="text-gray-800 whitespace-pre-wrap">{renderPostTemplate(postForm.content, postPreviewVars) || '—'}</div>
+                            </div>
+                            <div>
+                              <div className="text-[11px] text-gray-500">CTA URL</div>
+                              <div className="text-gray-800 break-all">{renderPostTemplate(postForm.actionUrl, postPreviewVars) || '—'}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[11px] text-gray-500">Select at least 1 target location to see preview.</div>
+                      )}
                     </div>
                     <div className="grid gap-3 md:grid-cols-2">
                       <div>
@@ -5835,58 +7492,138 @@ export default function GmbDashboardPage() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-xl border">
-                  <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                    <div className="col-span-4">Post</div>
-                    <div className="col-span-2">Status</div>
-                    <div className="col-span-3">Schedule/Published</div>
-                    <div className="col-span-1">Targets</div>
-                    <div className="col-span-2">Actions</div>
-                  </div>
-                  <div className="divide-y">
-                    {postsForView.length === 0 ? (
-                      <div className="px-4 py-8 text-sm text-gray-600">No posts in this view.</div>
-                    ) : (
-                      postsForView.map((p) => (
-                        <div key={p.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm gap-2">
-                          <div className="col-span-4">
-                            <div className="font-medium text-gray-900">{p.title || 'Untitled'}</div>
-                            <div className="text-xs text-gray-500 line-clamp-2">{p.content}</div>
-                          </div>
-                          <div className="col-span-2">
-                            <Badge
-                              variant={
-                                p.status === 'published'
-                                  ? 'success'
-                                  : p.status === 'failed'
-                                    ? 'danger'
-                                    : p.status === 'scheduled'
-                                      ? 'info'
-                                      : 'neutral'
-                              }
-                            >
-                              {p.status}
-                            </Badge>
-                          </div>
-                          <div className="col-span-3 text-xs text-gray-600">
-                            {p.scheduled_at ? `Scheduled: ${new Date(p.scheduled_at).toLocaleString()}` : ''}
-                            {p.published_at ? `Published: ${new Date(p.published_at).toLocaleString()}` : ''}
-                            {!p.scheduled_at && !p.published_at ? '—' : ''}
-                          </div>
-                          <div className="col-span-1 text-gray-700">{p.target_locations?.length ?? 0}</div>
-                          <div className="col-span-2 flex gap-2 justify-end">
-                            <Button
-                              size="sm"
-                              onClick={() => handlePublishPost(p.id)}
-                              disabled={posting || p.status === 'published' || p.status === 'scheduled'}
-                            >
-                              Publish
-                            </Button>
-                          </div>
+                <div className="space-y-3">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div className="text-xs text-gray-500">
+                        Showing <span className="font-medium text-gray-900">{postsForView.length}</span> post(s)
+                        <span className="text-gray-400"> • </span>
+                        Page <span className="font-medium text-gray-900">{postsPage}</span> / {postsPageCount}
+                        {postsHasMore ? (
+                          <span>
+                            {' '}
+                            • Loaded <span className="font-medium text-gray-900">{posts.length}</span> so far
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <Input
+                          value={postsSearch}
+                          onChange={(e) => setPostsSearch(e.target.value)}
+                          placeholder="Search posts…"
+                          className="h-9 sm:w-[320px]"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="sm" onClick={handlePostsPrevPage} disabled={postsPage <= 1}>
+                            Prev
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handlePostsNextPage}
+                            disabled={postsLoadingMore || (!postsHasMore && postsPage >= postsPageCount)}
+                          >
+                            {postsLoadingMore ? 'Loading…' : 'Next'}
+                          </Button>
                         </div>
-                      ))
+                      </div>
+                    </div>
+
+                    {postsPageItems.length === 0 ? (
+                      <div className="rounded-xl border p-6 text-sm text-gray-600">No posts in this view.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {postsPageItems.map((p) => {
+                          const stats = postPublicationStats[p.id]
+                          const total = (stats?.ok || 0) + (stats?.failed || 0)
+                          const dateLabel = p.published_at
+                            ? `Published: ${new Date(p.published_at).toLocaleString()}`
+                            : p.scheduled_at
+                              ? `Scheduled: ${new Date(p.scheduled_at).toLocaleString()}`
+                              : `Created: ${new Date(p.created_at).toLocaleString()}`
+
+                          return (
+                            <div
+                              key={p.id}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => router.push(`/dashboard/gmb/posts/${p.id}`)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') router.push(`/dashboard/gmb/posts/${p.id}`)
+                              }}
+                              className="w-full text-left rounded-xl border p-4 bg-white hover:bg-gray-50"
+                            >
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <div className="font-semibold text-gray-900 truncate">{p.title || 'Untitled'}</div>
+                                    <Badge
+                                      variant={
+                                        p.status === 'published'
+                                          ? 'success'
+                                          : p.status === 'failed'
+                                            ? 'danger'
+                                            : p.status === 'scheduled'
+                                              ? 'info'
+                                              : 'neutral'
+                                      }
+                                    >
+                                      {p.status}
+                                    </Badge>
+                                  </div>
+                                  <div className="mt-1 text-xs text-gray-500 line-clamp-2">{p.content}</div>
+                                  <div className="mt-2 text-[11px] text-gray-500">
+                                    {dateLabel}
+                                    <span className="text-gray-300"> • </span>
+                                    Targets: <span className="text-gray-800">{p.target_locations?.length ?? 0}</span>
+                                    {total ? (
+                                      <>
+                                        <span className="text-gray-300"> • </span>
+                                        OK {stats?.ok || 0} / Failed {stats?.failed || 0}
+                                      </>
+                                    ) : null}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-end">
+                                  {p.status !== 'published' && p.status !== 'scheduled' ? (
+                                    <Button
+                                      size="sm"
+                                      onClick={(e) => {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        handlePublishPost(p.id)
+                                      }}
+                                      disabled={posting}
+                                    >
+                                      Publish
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={(e) => {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        router.push(`/dashboard/gmb/posts/${p.id}`)
+                                      }}
+                                    >
+                                      View
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
                     )}
-                  </div>
+
+                    {postsHasMore ? (
+                      <div className="text-[11px] text-gray-500">
+                        Tip: Keep clicking <span className="font-medium text-gray-900">Next</span> to load older posts (pagination + max fetch).
+                      </div>
+                    ) : null}
                 </div>
               )}
             </CardContent>
@@ -5900,7 +7637,7 @@ export default function GmbDashboardPage() {
                 <div>
                   <CardTitle className="flex items-center gap-2">
                     <CalendarDays className="h-5 w-5" />
-                    Performance Analytics (30 days)
+                    Performance Analytics (60 days)
                   </CardTitle>
                   <CardDescription>
                     Sync Google Business Profile performance metrics and view totals.
@@ -5920,10 +7657,110 @@ export default function GmbDashboardPage() {
                     <RefreshCw className="h-4 w-4 mr-2" />
                     {syncingInsights ? 'Syncing…' : 'Sync insights'}
                   </Button>
+                  <Button variant="outline" onClick={() => handleSyncKeywords()} disabled={syncingKeywords || !organizationId || accounts.length === 0}>
+                    <Search className="h-4 w-4 mr-2" />
+                    {syncingKeywords ? 'Syncing…' : 'Sync keywords'}
+                  </Button>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
+              {Array.isArray(insightsPayload?.demand?.keyword_gaps) && insightsPayload.demand.keyword_gaps.length ? (
+                <div className="rounded-2xl border bg-white p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-gray-900">Keyword data missing</div>
+                      <div className="text-xs text-gray-500">
+                        {insightsPayload.demand.keyword_gaps.length} location(s) have no search keywords yet.
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleSyncKeywords(insightsPayload.demand.keyword_gaps.map((l: any) => l.id))}
+                      disabled={syncingKeywords}
+                    >
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      {syncingKeywords ? 'Syncing…' : 'Sync missing keywords'}
+                    </Button>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    {insightsPayload.demand.keyword_gaps.slice(0, 6).map((l: any) => (
+                      <div key={l.id} className="rounded-lg border bg-gray-50 p-2 text-xs text-gray-700">
+                        {l.location_name || '—'}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-2xl border bg-white p-4">
+                  <div className="text-sm font-semibold text-gray-900">Performance deltas (last 30 vs prior 30)</div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2 text-sm">
+                    {[
+                      { label: 'Impressions', key: 'impressions' },
+                      { label: 'Website clicks', key: 'websiteClicks' },
+                      { label: 'Calls', key: 'calls' },
+                      { label: 'Directions', key: 'directions' },
+                    ].map((m) => {
+                      const row = (performanceDelta as any)[m.key]
+                      const sign = row?.delta > 0 ? '+' : row?.delta < 0 ? '' : ''
+                      const isSpike = row?.pct != null && Number(row.pct) >= 20
+                      const isDrop = row?.pct != null && Number(row.pct) <= -20
+                      const deltaCls = row?.delta > 0 ? 'text-emerald-700' : row?.delta < 0 ? 'text-rose-700' : 'text-gray-500'
+                      return (
+                        <div key={m.key} className="rounded-lg border bg-gray-50 p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs text-gray-500">{m.label}</div>
+                            {isDrop ? <Badge variant="danger">Drop</Badge> : isSpike ? <Badge variant="success">Spike</Badge> : null}
+                          </div>
+                          <div className="mt-1 font-semibold text-gray-900">
+                            {fmt(row?.cur)}{' '}
+                            <span className={`text-xs ${deltaCls}`}>
+                              ({sign}{fmt(row?.delta)}{row?.pct != null ? `, ${sign}${row.pct}%` : ''})
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border bg-white p-4">
+                  <div className="text-sm font-semibold text-gray-900">Keyword movers</div>
+                  <div className="mt-1 text-xs text-gray-500">
+                    {keywordMovers.latest && keywordMovers.prev
+                      ? `${keywordMovers.prev} → ${keywordMovers.latest}`
+                      : 'Need at least 2 months of data'}
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2 text-sm">
+                    <div>
+                      <div className="text-xs font-semibold text-emerald-700">Top gains</div>
+                      <div className="mt-1 space-y-1">
+                        {keywordMovers.up.length ? keywordMovers.up.map((r: any) => (
+                          <div key={r.keyword} className="flex items-center justify-between rounded-lg border bg-gray-50 px-2 py-1">
+                            <span className="truncate">{r.keyword}</span>
+                            <span className="text-xs text-emerald-700">+{fmt(r.delta)}</span>
+                          </div>
+                        )) : <div className="text-xs text-gray-500">—</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-rose-700">Top drops</div>
+                      <div className="mt-1 space-y-1">
+                        {keywordMovers.down.length ? keywordMovers.down.map((r: any) => (
+                          <div key={r.keyword} className="flex items-center justify-between rounded-lg border bg-gray-50 px-2 py-1">
+                            <span className="truncate">{r.keyword}</span>
+                            <span className="text-xs text-rose-700">{fmt(r.delta)}</span>
+                          </div>
+                        )) : <div className="text-xs text-gray-500">—</div>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="rounded-xl border bg-white p-4">
                 <div className="grid gap-3 md:grid-cols-3">
                   <div>
@@ -6001,15 +7838,16 @@ export default function GmbDashboardPage() {
               ) : null}
 
               {analyticsView === 'by_city' ? (
-                <div className="overflow-hidden rounded-xl border">
-                  <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                    <div className="col-span-4">City</div>
-                    <div className="col-span-2">Locations</div>
-                    <div className="col-span-2">Website</div>
-                    <div className="col-span-2">Calls</div>
-                    <div className="col-span-2">Impressions</div>
-                  </div>
-                  <div className="divide-y">
+                <div className="overflow-x-auto rounded-xl border">
+                  <div className="min-w-[720px]">
+                    <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                      <div className="col-span-4">City</div>
+                      <div className="col-span-2">Locations</div>
+                      <div className="col-span-2">Website</div>
+                      <div className="col-span-2">Calls</div>
+                      <div className="col-span-2">Impressions</div>
+                    </div>
+                    <div className="divide-y">
                     {perfByCityRows.length === 0 ? (
                       <div className="px-4 py-8 text-sm text-gray-600">No insights data for the selected filters.</div>
                     ) : (
@@ -6026,20 +7864,22 @@ export default function GmbDashboardPage() {
                         </div>
                       ))
                     )}
+                    </div>
                   </div>
                 </div>
               ) : null}
 
               {analyticsView === 'by_location' ? (
-                <div className="overflow-hidden rounded-xl border">
-                  <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                    <div className="col-span-5">Location</div>
-                    <div className="col-span-2">Website</div>
-                    <div className="col-span-1">Calls</div>
-                    <div className="col-span-2">Directions</div>
-                    <div className="col-span-2">Impressions</div>
-                  </div>
-                  <div className="divide-y">
+                <div className="overflow-x-auto rounded-xl border">
+                  <div className="min-w-[760px]">
+                    <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                      <div className="col-span-5">Location</div>
+                      <div className="col-span-2">Website</div>
+                      <div className="col-span-1">Calls</div>
+                      <div className="col-span-2">Directions</div>
+                      <div className="col-span-2">Impressions</div>
+                    </div>
+                    <div className="divide-y">
                     {perfFilteredLocationTotals.length === 0 ? (
                       <div className="px-4 py-8 text-sm text-gray-600">No insights data yet.</div>
                     ) : (
@@ -6071,6 +7911,7 @@ export default function GmbDashboardPage() {
                         )
                       })
                     )}
+                    </div>
                   </div>
                 </div>
               ) : null}
@@ -6234,10 +8075,28 @@ export default function GmbDashboardPage() {
             <CardContent>
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm text-gray-600">
-                    Track and export keyword ranks. Scheduling is controlled via <span className="font-mono">is_scheduled</span>.
-                  </div>
-                  <div className="flex gap-2">
+                    <div className="text-sm text-gray-600">
+                      Track and export keyword ranks. Scheduling is controlled via <span className="font-mono">is_scheduled</span>.
+                    </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <select
+                        className="w-full sm:w-64 p-2 border rounded-md"
+                        value={rankLocationFilter}
+                        onChange={(e) => setRankLocationFilter(e.target.value)}
+                      >
+                        <option value="all">All locations</option>
+                        {locations.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.location_name}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="flex items-center gap-2 text-sm text-gray-700">
+                        <input type="checkbox" checked={rankIncludeGlobal} onChange={(e) => setRankIncludeGlobal(e.target.checked)} />
+                        Include global keywords
+                      </label>
+                    </div>
                     <Button variant="outline" onClick={exportKeywordRanksCsv} disabled={rankKeywords.length === 0}>
                       Export CSV
                     </Button>
@@ -6245,6 +8104,348 @@ export default function GmbDashboardPage() {
                       {rankRunning ? 'Running…' : 'Run now'}
                     </Button>
                   </div>
+                </div>
+
+                {/* Average Rank Analysis (like screenshot) */}
+                <div className="rounded-2xl border bg-white p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <div className="text-lg font-semibold text-gray-900">Average Rank Analysis</div>
+                      <div className="text-xs text-gray-500">Based on latest vs previous rank run.</div>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <div className="flex items-center gap-2">
+                        {[
+                          { key: '1w', label: '1W' },
+                          { key: '1m', label: '1M' },
+                          { key: '6m', label: '6M' },
+                          { key: '1y', label: '1Y' },
+                          { key: 'all', label: 'All time' },
+                        ].map((r) => (
+                          <button
+                            key={r.key}
+                            type="button"
+                            onClick={() => {
+                              setRankRange(r.key as any)
+                              if (organizationId) loadRankData(organizationId)
+                            }}
+                            className={`px-2.5 py-1.5 rounded-md text-sm border ${
+                              rankRange === (r.key as any) ? 'border-gray-900 text-gray-900 bg-gray-50' : 'border-gray-200 text-gray-700'
+                            }`}
+                          >
+                            {r.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setRankMode('keyword')}
+                          className={`px-3 py-2 rounded-md border text-sm ${
+                            rankMode === 'keyword' ? 'border-indigo-400 text-indigo-700 bg-indigo-50' : 'border-gray-200 text-gray-700'
+                          }`}
+                        >
+                          Keyword Wise
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRankMode('brand')}
+                          className={`px-3 py-2 rounded-md border text-sm ${
+                            rankMode === 'brand' ? 'border-indigo-400 text-indigo-700 bg-indigo-50' : 'border-gray-200 text-gray-700'
+                          }`}
+                        >
+                          Brand Wise
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                    <div className="rounded-xl border bg-gray-50 p-4">
+                      <div className="text-xs text-gray-500">Avg. Rank</div>
+                      <div className="mt-1 text-2xl font-semibold text-gray-900">
+                        {rankSummary.avgRank != null ? rankSummary.avgRank : '—'}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">Across {rankSummary.total} keyword(s)</div>
+                    </div>
+                    <div className="rounded-xl border bg-gray-50 p-4">
+                      <div className="text-xs text-gray-500">Visibility Score</div>
+                      <div className="mt-1 text-2xl font-semibold text-gray-900">
+                        {rankSummary.visibilityScore != null ? `${rankSummary.visibilityScore}%` : '—'}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">Higher = better (rank 1–20 normalized)</div>
+                    </div>
+                    <div className="rounded-xl border bg-gray-50 p-4">
+                      <div className="text-xs text-gray-500">Change in Rank</div>
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setRankChangeTab('increased')}
+                          className={`px-3 py-2 rounded-full text-sm font-medium border ${
+                            rankChangeTab === 'increased'
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                              : 'bg-white border-gray-200 text-gray-700'
+                          }`}
+                        >
+                          ↑ Increased ({rankSummary.improved})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRankChangeTab('decreased')}
+                          className={`px-3 py-2 rounded-full text-sm font-medium border ${
+                            rankChangeTab === 'decreased'
+                              ? 'bg-rose-50 border-rose-200 text-rose-700'
+                              : 'bg-white border-gray-200 text-gray-700'
+                          }`}
+                        >
+                          ↓ Decreased ({rankSummary.dropped})
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div className="rounded-xl border bg-white p-4">
+                      <div className="text-sm font-semibold text-gray-900 mb-2">Avg Rank trend</div>
+                      <div className="h-[220px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <RLineChart data={rankChartSeries}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                            <YAxis tick={{ fontSize: 11 }} />
+                            <Tooltip />
+                            <RLine type="monotone" dataKey="avg_rank" stroke="#2563eb" strokeWidth={2} dot={false} />
+                          </RLineChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="mt-2 text-[11px] text-gray-500">Uses rank points in selected range (limited to latest 5000 points).</div>
+                    </div>
+
+                    <div className="rounded-xl border bg-white overflow-hidden">
+                      <div className="flex items-center justify-between bg-gray-50 px-4 py-3">
+                        <div className="text-sm font-semibold text-gray-900">Keywords</div>
+                        <div className="text-[11px] text-gray-500">Top {rankChangeRows.length}</div>
+                      </div>
+                      <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                        <div className="col-span-6">Keywords</div>
+                        <div className="col-span-2">Rank</div>
+                        <div className="col-span-2">Change</div>
+                        <div className="col-span-2">Listings</div>
+                      </div>
+                      <div className="divide-y max-h-[260px] overflow-y-auto">
+                        {rankChangeRows.length === 0 ? (
+                          <div className="px-4 py-6 text-sm text-gray-600">No rows for this filter yet.</div>
+                        ) : (
+                          rankChangeRows.map((r) => (
+                            <div key={r.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
+                              <div className="col-span-6 font-medium text-gray-900 truncate">{r.keyword}</div>
+                              <div className="col-span-2 text-gray-900">{r.latestRank != null ? r.latestRank : '—'}</div>
+                              <div className="col-span-2">
+                                {r.delta == null ? (
+                                  <span className="text-gray-500">—</span>
+                                ) : r.delta > 0 ? (
+                                  <span className="text-emerald-700 font-semibold">+{r.delta}</span>
+                                ) : (
+                                  <span className="text-rose-700 font-semibold">{r.delta}</span>
+                                )}
+                              </div>
+                              <div className="col-span-2 text-gray-700">{r.listings}</div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <div className="font-semibold text-gray-900">Import from Google search keywords (GBP)</div>
+                      <div className="text-xs text-gray-500">
+                        You synced “Search keywords” (monthly impressions). Import them here to start rank tracking.
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <select
+                        className="w-full sm:w-64 p-2 border rounded-md"
+                        value={rankImportLocationId}
+                        onChange={(e) => setRankImportLocationId(e.target.value)}
+                      >
+                        <option value="">All locations</option>
+                        {locations.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.location_name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            if (!organizationId) return
+                            if (!gbpKeywordIdeas.length) {
+                              notify({ variant: 'info', title: 'No GBP keywords found', message: 'Sync keywords first (Performance tab).' })
+                              return
+                            }
+                            const { data: { user } } = await supabase.auth.getUser()
+                            if (!user) return
+
+                            const locId = rankImportLocationId || (rankLocationFilter !== 'all' ? rankLocationFilter : '')
+                            const lang = rankKeywordForm.languageCode || 'en'
+                            const existing = new Set(
+                              (rankKeywords || []).map((k: any) => `${String(k?.keyword || '').trim().toLowerCase()}|${String(k?.gmb_location_id || '')}|${String(k?.language_code || lang)}`)
+                            )
+
+                            const rows = gbpKeywordIdeas
+                              .slice(0, 10)
+                              .map((it: any) => String(it.keyword || '').trim())
+                              .filter(Boolean)
+                              .filter((kw) => !existing.has(`${kw.toLowerCase()}|${String(locId || '')}|${lang}`))
+                              .map((kw) => ({
+                                organization_id: organizationId,
+                                gmb_location_id: locId || null,
+                                keyword: kw,
+                                location_name: locId ? null : (rankKeywordForm.locationName || null),
+                                language_code: lang,
+                                is_scheduled: true,
+                                created_by: user.id,
+                              }))
+
+                            if (!rows.length) {
+                              notify({ variant: 'info', title: 'Nothing to import', message: 'Top keywords already added to tracking.' })
+                              return
+                            }
+                            const { error } = await supabase.from('rank_keywords').insert(rows)
+                            if (error) {
+                              notify({ variant: 'error', title: 'Import failed', message: error.message })
+                              return
+                            }
+                            notify({ variant: 'success', title: 'Imported keywords', message: `Added ${rows.length} keyword(s) to tracking.` })
+                            await loadRankData(organizationId)
+                          }}
+                          disabled={rankLoading || !organizationId}
+                        >
+                          Import top 10
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={async () => {
+                            if (!organizationId) return
+                            await (async () => {
+                              if (!gbpKeywordIdeas.length) {
+                                notify({ variant: 'info', title: 'No GBP keywords found', message: 'Sync keywords first (Performance tab).' })
+                                return
+                              }
+                              const { data: { user } } = await supabase.auth.getUser()
+                              if (!user) return
+                              const locId = rankImportLocationId || (rankLocationFilter !== 'all' ? rankLocationFilter : '')
+                              const lang = rankKeywordForm.languageCode || 'en'
+                              const existing = new Set(
+                                (rankKeywords || []).map((k: any) => `${String(k?.keyword || '').trim().toLowerCase()}|${String(k?.gmb_location_id || '')}|${String(k?.language_code || lang)}`)
+                              )
+                              const rows = gbpKeywordIdeas
+                                .slice(0, 10)
+                                .map((it: any) => String(it.keyword || '').trim())
+                                .filter(Boolean)
+                                .filter((kw) => !existing.has(`${kw.toLowerCase()}|${String(locId || '')}|${lang}`))
+                                .map((kw) => ({
+                                  organization_id: organizationId,
+                                  gmb_location_id: locId || null,
+                                  keyword: kw,
+                                  location_name: locId ? null : (rankKeywordForm.locationName || null),
+                                  language_code: lang,
+                                  is_scheduled: true,
+                                  created_by: user.id,
+                                }))
+                              if (rows.length) {
+                                const { error } = await supabase.from('rank_keywords').insert(rows)
+                                if (error) throw error
+                              }
+                            })()
+                            await loadRankData(organizationId)
+                            await runKeywordRanksNow()
+                          }}
+                          disabled={rankRunning || rankLoading || !organizationId}
+                        >
+                          Import + Run
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 text-xs text-gray-500">
+                    Latest month: <span className="font-medium text-gray-900">{gbpKeywordMonthLatest || '—'}</span> • Source: Google sync
+                  </div>
+
+                  {gbpKeywordIdeas.length === 0 ? (
+                    <div className="mt-3 text-sm text-gray-600">
+                      No GBP search keywords available yet. Go to <span className="font-medium">Performance</span> and click <span className="font-medium">Sync keywords</span>.
+                    </div>
+                  ) : (
+                    <div className="mt-3 overflow-x-auto rounded-xl border">
+                      <div className="min-w-[720px]">
+                        <div className="grid grid-cols-12 bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-600">
+                          <div className="col-span-7">Keyword</div>
+                          <div className="col-span-3 text-right">Impressions</div>
+                          <div className="col-span-2 text-right">Action</div>
+                        </div>
+                        <div className="divide-y max-h-[320px] overflow-y-auto">
+                          {gbpKeywordIdeas.map((it: any) => (
+                            <div key={it.keyword} className="grid grid-cols-12 items-center px-3 py-2 text-sm">
+                              <div className="col-span-7 font-medium text-gray-900 truncate">{it.keyword}</div>
+                              <div className="col-span-3 text-right text-gray-700">{fmt(it.impressions)}</div>
+                              <div className="col-span-2 text-right">
+                                <Button
+                                  size="sm"
+                                  onClick={async () => {
+                                    if (!organizationId) return
+                                    const { data: { user } } = await supabase.auth.getUser()
+                                    if (!user) return
+                                    const locId = rankImportLocationId || (rankLocationFilter !== 'all' ? rankLocationFilter : '')
+                                    const lang = rankKeywordForm.languageCode || 'en'
+                                    const kw = String(it.keyword || '').trim()
+                                    if (!kw) return
+
+                                    const exists = (rankKeywords || []).some((k: any) => {
+                                      const kkw = String(k?.keyword || '').trim().toLowerCase()
+                                      const kid = String(k?.gmb_location_id || '')
+                                      const kl = String(k?.language_code || lang)
+                                      return kkw === kw.toLowerCase() && kid === String(locId || '') && kl === lang
+                                    })
+                                    if (exists) {
+                                      notify({ variant: 'info', title: 'Already tracking', message: 'This keyword is already in rank tracking.' })
+                                      return
+                                    }
+
+                                    const { error } = await supabase.from('rank_keywords').insert({
+                                      organization_id: organizationId,
+                                      gmb_location_id: locId || null,
+                                      keyword: kw,
+                                      location_name: locId ? null : (rankKeywordForm.locationName || null),
+                                      language_code: lang,
+                                      is_scheduled: true,
+                                      created_by: user.id,
+                                    })
+                                    if (error) {
+                                      notify({ variant: 'error', title: 'Failed to add keyword', message: error.message })
+                                      return
+                                    }
+                                    notify({ variant: 'success', title: 'Added to tracking', message: 'Now click “Run now” to fetch ranks.' })
+                                    await loadRankData(organizationId)
+                                  }}
+                                  disabled={rankLoading}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid gap-4 lg:grid-cols-2">
@@ -6287,42 +8488,51 @@ export default function GmbDashboardPage() {
 
                   <div className="rounded-xl border bg-white p-4">
                     <div className="font-semibold text-gray-900 mb-3">Keywords</div>
-                    {rankKeywords.length === 0 ? (
-                      <div className="text-sm text-gray-600">No keywords yet.</div>
+                    {trackedKeywordsForView.length === 0 ? (
+                      <div className="text-sm text-gray-600">
+                        No tracked keywords for this view.
+                        {gbpKeywordIdeas.length ? (
+                          <div className="mt-2 text-xs text-gray-500">
+                            Tip: you already have Google search keywords in DB — import them below to start rank tracking.
+                          </div>
+                        ) : null}
+                      </div>
                     ) : (
-                      <div className="overflow-hidden rounded-xl border">
-                        <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                          <div className="col-span-5">Keyword</div>
-                          <div className="col-span-4">Location</div>
-                          <div className="col-span-3 text-right">Latest rank</div>
-                        </div>
-                        <div className="divide-y max-h-[380px] overflow-y-auto">
-                          {rankKeywords.map((k) => {
-                            const latest = rankLatestByKeyword[k.id]
-                            const prev = rankPrevByKeyword[k.id]
-                            const delta =
-                              latest?.rank_position != null && prev?.rank_position != null
-                                ? Number(prev.rank_position) - Number(latest.rank_position)
-                                : null
-                            return (
-                              <div key={k.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
-                                <div className="col-span-5 font-medium text-gray-900">{k.keyword}</div>
-                                <div className="col-span-4 text-gray-700">{k.location?.location_name || k.location_name || '—'}</div>
-                                <div className="col-span-3 text-right font-semibold text-gray-900">
-                                  {latest?.rank_position ?? '—'}{' '}
-                                  {delta != null ? (
-                                    <span
-                                      className={`ml-1 text-xs font-medium ${
-                                        delta > 0 ? 'text-emerald-700' : delta < 0 ? 'text-red-700' : 'text-gray-500'
-                                      }`}
-                                    >
-                                      {delta > 0 ? `↑${delta}` : delta < 0 ? `↓${Math.abs(delta)}` : '—'}
-                                    </span>
-                                  ) : null}
+                      <div className="overflow-x-auto rounded-xl border">
+                        <div className="min-w-[720px]">
+                          <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                            <div className="col-span-5">Keyword</div>
+                            <div className="col-span-4">Location</div>
+                            <div className="col-span-3 text-right">Latest rank</div>
+                          </div>
+                          <div className="divide-y max-h-[380px] overflow-y-auto">
+                            {trackedKeywordsForView.map((k) => {
+                              const latest = rankLatestByKeyword[k.id]
+                              const prev = rankPrevByKeyword[k.id]
+                              const delta =
+                                latest?.rank_position != null && prev?.rank_position != null
+                                  ? Number(prev.rank_position) - Number(latest.rank_position)
+                                  : null
+                              return (
+                                <div key={k.id} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
+                                  <div className="col-span-5 font-medium text-gray-900">{k.keyword}</div>
+                                  <div className="col-span-4 text-gray-700">{k.location?.location_name || k.location_name || '—'}</div>
+                                  <div className="col-span-3 text-right font-semibold text-gray-900">
+                                    {latest?.rank_position ?? '—'}{' '}
+                                    {delta != null ? (
+                                      <span
+                                        className={`ml-1 text-xs font-medium ${
+                                          delta > 0 ? 'text-emerald-700' : delta < 0 ? 'text-red-700' : 'text-gray-500'
+                                        }`}
+                                      >
+                                        {delta > 0 ? `↑${delta}` : delta < 0 ? `↓${Math.abs(delta)}` : '—'}
+                                      </span>
+                                    ) : null}
+                                  </div>
                                 </div>
-                              </div>
-                            )
-                          })}
+                              )
+                            })}
+                          </div>
                         </div>
                       </div>
                     )}
@@ -6334,30 +8544,32 @@ export default function GmbDashboardPage() {
                   {rankRuns.length === 0 ? (
                     <div className="text-sm text-gray-600">No runs yet.</div>
                   ) : (
-                    <div className="overflow-hidden rounded-xl border">
-                      <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                        <div className="col-span-4">Created</div>
-                        <div className="col-span-2">Status</div>
-                        <div className="col-span-2">Total</div>
-                        <div className="col-span-2">OK</div>
-                        <div className="col-span-2">Failed</div>
-                      </div>
-                      <div className="divide-y max-h-64 overflow-y-auto">
-                        {rankRuns.map((r) => (
-                          <div key={r.id} className="grid grid-cols-12 items-center px-4 py-2 text-sm">
-                            <div className="col-span-4 text-gray-700">{new Date(r.created_at).toLocaleString()}</div>
-                            <div className="col-span-2">
-                              <Badge
-                                variant={r.status === 'completed' ? 'success' : r.status === 'failed' ? 'danger' : 'info'}
-                              >
-                                {r.status}
-                              </Badge>
+                    <div className="overflow-x-auto rounded-xl border">
+                      <div className="min-w-[720px]">
+                        <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                          <div className="col-span-4">Created</div>
+                          <div className="col-span-2">Status</div>
+                          <div className="col-span-2">Total</div>
+                          <div className="col-span-2">OK</div>
+                          <div className="col-span-2">Failed</div>
+                        </div>
+                        <div className="divide-y max-h-64 overflow-y-auto">
+                          {rankRuns.map((r) => (
+                            <div key={r.id} className="grid grid-cols-12 items-center px-4 py-2 text-sm">
+                              <div className="col-span-4 text-gray-700">{new Date(r.created_at).toLocaleString()}</div>
+                              <div className="col-span-2">
+                                <Badge
+                                  variant={r.status === 'completed' ? 'success' : r.status === 'failed' ? 'danger' : 'info'}
+                                >
+                                  {r.status}
+                                </Badge>
+                              </div>
+                              <div className="col-span-2">{r.total_tasks ?? 0}</div>
+                              <div className="col-span-2">{r.successful_tasks ?? 0}</div>
+                              <div className="col-span-2">{r.failed_tasks ?? 0}</div>
                             </div>
-                            <div className="col-span-2">{r.total_tasks ?? 0}</div>
-                            <div className="col-span-2">{r.successful_tasks ?? 0}</div>
-                            <div className="col-span-2">{r.failed_tasks ?? 0}</div>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -6421,23 +8633,25 @@ export default function GmbDashboardPage() {
                               </div>
 
                               {top.length ? (
-                                <div className="overflow-hidden rounded-xl border">
-                                  <div className="grid grid-cols-12 bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-600">
-                                    <div className="col-span-7">Title</div>
-                                    <div className="col-span-2 text-right">Rank</div>
-                                    <div className="col-span-3 text-right">Rating</div>
-                                  </div>
-                                  <div className="divide-y">
-                                    {top.map((it: any, idx: number) => (
-                                      <div key={idx} className="grid grid-cols-12 items-center px-3 py-2 text-xs">
-                                        <div className="col-span-7 font-medium text-gray-900 truncate">{it.title || '—'}</div>
-                                        <div className="col-span-2 text-right text-gray-900">{it.rank ?? '—'}</div>
-                                        <div className="col-span-3 text-right text-gray-700">
-                                          {it.rating != null ? `${it.rating}★` : '—'}
-                                          {it.reviews != null ? ` • ${it.reviews}` : ''}
+                                <div className="overflow-x-auto rounded-xl border">
+                                  <div className="min-w-[640px]">
+                                    <div className="grid grid-cols-12 bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-600">
+                                      <div className="col-span-7">Title</div>
+                                      <div className="col-span-2 text-right">Rank</div>
+                                      <div className="col-span-3 text-right">Rating</div>
+                                    </div>
+                                    <div className="divide-y">
+                                      {top.map((it: any, idx: number) => (
+                                        <div key={idx} className="grid grid-cols-12 items-center px-3 py-2 text-xs">
+                                          <div className="col-span-7 font-medium text-gray-900 truncate">{it.title || '—'}</div>
+                                          <div className="col-span-2 text-right text-gray-900">{it.rank ?? '—'}</div>
+                                          <div className="col-span-3 text-right text-gray-700">
+                                            {it.rating != null ? `${it.rating}★` : '—'}
+                                            {it.reviews != null ? ` • ${it.reviews}` : ''}
+                                          </div>
                                         </div>
-                                      </div>
-                                    ))}
+                                      ))}
+                                    </div>
                                   </div>
                                 </div>
                               ) : (
@@ -6661,35 +8875,37 @@ export default function GmbDashboardPage() {
                   {geoRuns.length === 0 ? (
                     <div className="text-sm text-gray-600">No scans yet.</div>
                   ) : (
-                    <div className="overflow-hidden rounded-xl border">
-                      <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                        <div className="col-span-4">Created</div>
-                        <div className="col-span-4">Keyword</div>
-                        <div className="col-span-2">Grid</div>
-                        <div className="col-span-2">Status</div>
-                      </div>
-                      <div className="divide-y">
-                        {geoRuns.map((r: any) => (
-                          <button
-                            key={r.id}
-                            type="button"
-                            className="grid grid-cols-12 items-center px-4 py-3 text-sm hover:bg-gray-50 text-left"
-                            onClick={async () => {
-                              setGeoSelectedRunId(r.id)
-                              if (organizationId) await loadGeoGridPoints(organizationId, r.id)
-                              setGeoGridTab('scan')
-                            }}
-                          >
-                            <div className="col-span-4 text-gray-700">{new Date(r.created_at).toLocaleString()}</div>
-                            <div className="col-span-4 font-medium text-gray-900">{r.keyword}</div>
-                            <div className="col-span-2 text-gray-700">{r.grid_size}x{r.grid_size}</div>
-                            <div className="col-span-2">
-                              <Badge variant={r.status === 'completed' ? 'success' : r.status === 'failed' ? 'danger' : 'info'}>
-                                {r.status}
-                              </Badge>
-                            </div>
-                          </button>
-                        ))}
+                    <div className="overflow-x-auto rounded-xl border">
+                      <div className="min-w-[720px]">
+                        <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                          <div className="col-span-4">Created</div>
+                          <div className="col-span-4">Keyword</div>
+                          <div className="col-span-2">Grid</div>
+                          <div className="col-span-2">Status</div>
+                        </div>
+                        <div className="divide-y">
+                          {geoRuns.map((r: any) => (
+                            <button
+                              key={r.id}
+                              type="button"
+                              className="grid grid-cols-12 items-center px-4 py-3 text-sm hover:bg-gray-50 text-left"
+                              onClick={async () => {
+                                setGeoSelectedRunId(r.id)
+                                if (organizationId) await loadGeoGridPoints(organizationId, r.id)
+                                setGeoGridTab('scan')
+                              }}
+                            >
+                              <div className="col-span-4 text-gray-700">{new Date(r.created_at).toLocaleString()}</div>
+                              <div className="col-span-4 font-medium text-gray-900">{r.keyword}</div>
+                              <div className="col-span-2 text-gray-700">{r.grid_size}x{r.grid_size}</div>
+                              <div className="col-span-2">
+                                <Badge variant={r.status === 'completed' ? 'success' : r.status === 'failed' ? 'danger' : 'info'}>
+                                  {r.status}
+                                </Badge>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -6809,29 +9025,31 @@ export default function GmbDashboardPage() {
                     Run a Geo Grid scan first, then select it above to compute share of voice.
                   </div>
                 ) : (
-                  <div className="overflow-hidden rounded-xl border bg-white">
-                    <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
-                      <div className="col-span-5">Business</div>
-                      <div className="col-span-2">SoV %</div>
-                      <div className="col-span-2">Avg rank</div>
-                      <div className="col-span-3">Rating</div>
-                    </div>
-                    <div className="divide-y">
-                      {sovRows.rows.slice(0, 25).map((r: any) => (
-                        <div key={r.title} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
-                          <div className="col-span-5">
-                            <div className="font-medium text-gray-900">{r.title}</div>
-                            <div className="mt-1 h-2 w-full rounded-full bg-gray-100 overflow-hidden">
-                              <div className="h-full bg-blue-600" style={{ width: `${Math.min(100, r.share)}%` }} />
+                  <div className="overflow-x-auto rounded-xl border bg-white">
+                    <div className="min-w-[760px]">
+                      <div className="grid grid-cols-12 bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-600">
+                        <div className="col-span-5">Business</div>
+                        <div className="col-span-2">SoV %</div>
+                        <div className="col-span-2">Avg rank</div>
+                        <div className="col-span-3">Rating</div>
+                      </div>
+                      <div className="divide-y">
+                        {sovRows.rows.slice(0, 25).map((r: any) => (
+                          <div key={r.title} className="grid grid-cols-12 items-center px-4 py-3 text-sm">
+                            <div className="col-span-5 min-w-0">
+                              <div className="font-medium text-gray-900 truncate">{r.title}</div>
+                              <div className="mt-1 h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+                                <div className="h-full bg-blue-600" style={{ width: `${Math.min(100, r.share)}%` }} />
+                              </div>
+                            </div>
+                            <div className="col-span-2 font-semibold text-gray-900">{r.share}</div>
+                            <div className="col-span-2 text-gray-900">{r.avgRank ?? '—'}</div>
+                            <div className="col-span-3 text-gray-700">
+                              {r.rating != null ? `${r.rating}★` : '—'}{r.reviews != null ? ` • ${r.reviews} reviews` : ''}
                             </div>
                           </div>
-                          <div className="col-span-2 font-semibold text-gray-900">{r.share}</div>
-                          <div className="col-span-2 text-gray-900">{r.avgRank ?? '—'}</div>
-                          <div className="col-span-3 text-gray-700">
-                            {r.rating != null ? `${r.rating}★` : '—'}{r.reviews != null ? ` • ${r.reviews} reviews` : ''}
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}

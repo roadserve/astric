@@ -18,6 +18,14 @@ out/
 build/
 dist/
 
+# Local build artifacts / binaries (do not commit)
+astric-deployment/
+astric-deployment.zip
+web/astric-deployment/
+node.tar.gz
+web/node.tar.gz
+web/node-v*/
+
 # Flutter/Dart
 mobile/.dart_tool/
 mobile/.flutter-plugins

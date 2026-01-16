@@ -8,7 +8,14 @@ const nextConfig = {
   trailingSlash: true,
   images: {
     unoptimized: true,
-    domains: ['localhost', 'supabase.co', 'touchnsearch.com', 'astric.ai'],
+    domains: [
+      'localhost',
+      'supabase.co',
+      'touchnsearch.com',
+      'astric.ai',
+      'lh3.googleusercontent.com',
+      'storage.googleapis.com',
+    ],
   },
   eslint: {
     // Repo has many legacy lint warnings; don't block production builds.
